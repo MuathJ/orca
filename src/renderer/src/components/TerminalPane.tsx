@@ -74,10 +74,14 @@ function createIpcPtyTransport(
   cwd?: string,
   onPtyExit?: (ptyId: string) => void,
   onTitleChange?: (title: string) => void,
-  onPtySpawn?: (ptyId: string) => void
+  onPtySpawn?: (ptyId: string) => void,
+  onBell?: () => void
 ): PtyTransport {
   let connected = false
   let ptyId: string | null = null
+  let pendingEscape = false
+  let inOsc = false
+  let pendingOscEscape = false
   let storedCallbacks: {
     onConnect?: () => void
     onDisconnect?: () => void
@@ -109,6 +113,9 @@ function createIpcPtyTransport(
             if (onTitleChange) {
               const title = extractLastOscTitle(payload.data)
               if (title !== null) onTitleChange(title)
+            }
+            if (onBell && chunkContainsBell(payload.data)) {
+              onBell()
             }
           }
         })
@@ -164,6 +171,51 @@ function createIpcPtyTransport(
     destroy() {
       this.disconnect()
     }
+  }
+
+  function chunkContainsBell(data: string): boolean {
+    for (let i = 0; i < data.length; i += 1) {
+      const char = data[i]
+
+      if (inOsc) {
+        if (pendingOscEscape) {
+          pendingOscEscape = char === '\x1b'
+          if (char === '\\') {
+            inOsc = false
+            pendingOscEscape = false
+          }
+          continue
+        }
+
+        if (char === '\x07') {
+          inOsc = false
+          continue
+        }
+
+        pendingOscEscape = char === '\x1b'
+        continue
+      }
+
+      if (pendingEscape) {
+        pendingEscape = false
+        if (char === ']') {
+          inOsc = true
+          pendingOscEscape = false
+        } else if (char === '\x1b') {
+          pendingEscape = true
+        }
+        continue
+      }
+
+      if (char === '\x1b') {
+        pendingEscape = true
+        continue
+      }
+
+      if (char === '\x07') return true
+    }
+
+    return false
   }
 }
 
@@ -265,6 +317,7 @@ function collectLeafIds(
 
 interface TerminalPaneProps {
   tabId: string
+  worktreeId: string
   cwd?: string
   isActive: boolean
   onPtyExit: (ptyId: string) => void
@@ -272,6 +325,7 @@ interface TerminalPaneProps {
 
 export default function TerminalPane({
   tabId,
+  worktreeId,
   cwd,
   isActive,
   onPtyExit
@@ -430,6 +484,7 @@ export default function TerminalPane({
   const updateTabTitle = useAppStore((s) => s.updateTabTitle)
   const updateTabPtyId = useAppStore((s) => s.updateTabPtyId)
   const clearTabPtyId = useAppStore((s) => s.clearTabPtyId)
+  const markWorktreeUnreadFromBell = useAppStore((s) => s.markWorktreeUnreadFromBell)
 
   // Use a ref so the Restty closure always calls the latest onPtyExit
   const onPtyExitRef = useRef(onPtyExit)
@@ -463,6 +518,7 @@ export default function TerminalPane({
     }
 
     const onPtySpawn = (ptyId: string): void => updateTabPtyId(tabId, ptyId)
+    const onBell = (): void => markWorktreeUnreadFromBell(worktreeId)
 
     let shouldPersistLayout = false
 
@@ -488,7 +544,13 @@ export default function TerminalPane({
           fontSize: 14,
           fontSizeMode: 'em',
           alphaBlending: 'native',
-          ptyTransport: createIpcPtyTransport(cwd, onExit, onTitleChange, onPtySpawn) as never,
+          ptyTransport: createIpcPtyTransport(
+            cwd,
+            onExit,
+            onTitleChange,
+            onPtySpawn,
+            onBell
+          ) as never,
           fontSources: [
             {
               type: 'local' as const,

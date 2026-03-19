@@ -18,6 +18,12 @@ const api = {
     getGitUsername: (args: { repoId: string }): Promise<string> =>
       ipcRenderer.invoke('repos:getGitUsername', args),
 
+    getBaseRefDefault: (args: { repoId: string }): Promise<string> =>
+      ipcRenderer.invoke('repos:getBaseRefDefault', args),
+
+    searchBaseRefs: (args: { repoId: string; query: string; limit?: number }): Promise<string[]> =>
+      ipcRenderer.invoke('repos:searchBaseRefs', args),
+
     onChanged: (callback: () => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
       ipcRenderer.on('repos:changed', listener)
@@ -116,6 +122,11 @@ const api = {
   session: {
     get: (): Promise<unknown> => ipcRenderer.invoke('session:get'),
     set: (args: unknown): Promise<void> => ipcRenderer.invoke('session:set', args)
+  },
+
+  ui: {
+    get: (): Promise<unknown> => ipcRenderer.invoke('ui:get'),
+    set: (args: Record<string, unknown>): Promise<void> => ipcRenderer.invoke('ui:set', args)
   }
 }
 

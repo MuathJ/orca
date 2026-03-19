@@ -1,10 +1,12 @@
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
+import type { PersistedUIState } from '../../../../shared/types'
 
 export interface UISlice {
   sidebarOpen: boolean
   sidebarWidth: number
   toggleSidebar: () => void
+  setSidebarOpen: (open: boolean) => void
   setSidebarWidth: (width: number) => void
   activeView: 'terminal' | 'settings'
   setActiveView: (view: UISlice['activeView']) => void
@@ -22,12 +24,18 @@ export interface UISlice {
   setShowActiveOnly: (v: boolean) => void
   filterRepoId: string | null
   setFilterRepoId: (id: string | null) => void
+  pendingRevealWorktreeId: string | null
+  revealWorktreeInSidebar: (worktreeId: string) => void
+  clearPendingRevealWorktreeId: () => void
+  persistedUIReady: boolean
+  hydratePersistedUI: (ui: PersistedUIState) => void
 }
 
 export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => ({
   sidebarOpen: true,
   sidebarWidth: 280,
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setSidebarOpen: (open) => set({ sidebarOpen: open }),
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
 
   activeView: 'terminal',
@@ -51,5 +59,18 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   setShowActiveOnly: (v) => set({ showActiveOnly: v }),
 
   filterRepoId: null,
-  setFilterRepoId: (id) => set({ filterRepoId: id })
+  setFilterRepoId: (id) => set({ filterRepoId: id }),
+
+  pendingRevealWorktreeId: null,
+  revealWorktreeInSidebar: (worktreeId) => set({ pendingRevealWorktreeId: worktreeId }),
+  clearPendingRevealWorktreeId: () => set({ pendingRevealWorktreeId: null }),
+  persistedUIReady: false,
+
+  hydratePersistedUI: (ui) =>
+    set({
+      sidebarWidth: ui.sidebarWidth,
+      groupBy: ui.groupBy,
+      sortBy: ui.sortBy,
+      persistedUIReady: true
+    })
 })

@@ -232,6 +232,7 @@ export default function Terminal(): React.JSX.Element | null {
                 <TerminalPane
                   key={tab.id}
                   tabId={tab.id}
+                  worktreeId={worktree.id}
                   cwd={worktree.path}
                   isActive={isVisible && tab.id === activeTabId}
                   onPtyExit={(ptyId) => handlePtyExit(tab.id, ptyId)}

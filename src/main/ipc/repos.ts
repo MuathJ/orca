@@ -3,7 +3,13 @@ import { randomUUID } from 'crypto'
 import type { Store } from '../persistence'
 import type { Repo } from '../../shared/types'
 import { REPO_COLORS } from '../../shared/constants'
-import { isGitRepo, getGitUsername, getRepoName } from '../git/repo'
+import {
+  isGitRepo,
+  getGitUsername,
+  getRepoName,
+  getBaseRefDefault,
+  searchBaseRefs
+} from '../git/repo'
 
 export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): void {
   ipcMain.handle('repos:list', () => {
@@ -43,7 +49,9 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
       _event,
       args: {
         repoId: string
-        updates: Partial<Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings'>>
+        updates: Partial<
+          Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings' | 'worktreeBaseRef'>
+        >
       }
     ) => {
       const updated = store.updateRepo(args.repoId, args.updates)
@@ -65,6 +73,21 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
     if (!repo) return ''
     return getGitUsername(repo.path)
   })
+
+  ipcMain.handle('repos:getBaseRefDefault', async (_event, args: { repoId: string }) => {
+    const repo = store.getRepo(args.repoId)
+    if (!repo) return 'origin/main'
+    return getBaseRefDefault(repo.path)
+  })
+
+  ipcMain.handle(
+    'repos:searchBaseRefs',
+    async (_event, args: { repoId: string; query: string; limit?: number }) => {
+      const repo = store.getRepo(args.repoId)
+      if (!repo) return []
+      return searchBaseRefs(repo.path, args.query, args.limit ?? 25)
+    }
+  )
 }
 
 function notifyReposChanged(mainWindow: BrowserWindow): void {

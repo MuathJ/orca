@@ -159,9 +159,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
     [worktree.id, worktree.isUnread, updateWorktreeMeta]
   )
 
-  const unreadTooltip = worktree.isUnread
-    ? 'Unread - click to mark read'
-    : 'Read - hover/click to mark unread'
+  const unreadTooltip = worktree.isUnread ? 'Mark read' : 'Mark unread'
 
   return (
     <WorktreeContextMenu worktree={worktree}>

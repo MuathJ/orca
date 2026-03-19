@@ -6,6 +6,7 @@ import type { PersistedState, Repo, WorktreeMeta, GlobalSettings } from '../shar
 import { getGitUsername } from './git/repo'
 import {
   getDefaultPersistedState,
+  getDefaultUIState,
   getDefaultRepoHookSettings,
   getDefaultWorkspaceSession
 } from '../shared/constants'
@@ -89,7 +90,7 @@ export class Store {
 
   updateRepo(
     id: string,
-    updates: Partial<Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings'>>
+    updates: Partial<Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings' | 'worktreeBaseRef'>>
   ): Repo | null {
     const repo = this.state.repos.find((r) => r.id === id)
     if (!repo) return null
@@ -159,7 +160,7 @@ export class Store {
   // ── UI State ───────────────────────────────────────────────────────
 
   getUI(): PersistedState['ui'] {
-    return this.state.ui
+    return { ...getDefaultUIState(), ...this.state.ui }
   }
 
   updateUI(updates: Partial<PersistedState['ui']>): void {

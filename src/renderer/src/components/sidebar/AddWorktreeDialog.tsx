@@ -27,6 +27,14 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
   const repos = useAppStore((s) => s.repos)
   const createWorktree = useAppStore((s) => s.createWorktree)
   const updateWorktreeMeta = useAppStore((s) => s.updateWorktreeMeta)
+  const setActiveRepo = useAppStore((s) => s.setActiveRepo)
+  const setActiveWorktree = useAppStore((s) => s.setActiveWorktree)
+  const setActiveView = useAppStore((s) => s.setActiveView)
+  const setSidebarOpen = useAppStore((s) => s.setSidebarOpen)
+  const setSearchQuery = useAppStore((s) => s.setSearchQuery)
+  const setShowActiveOnly = useAppStore((s) => s.setShowActiveOnly)
+  const setFilterRepoId = useAppStore((s) => s.setFilterRepoId)
+  const revealWorktreeInSidebar = useAppStore((s) => s.revealWorktreeInSidebar)
 
   const [repoId, setRepoId] = useState<string>('')
   const [name, setName] = useState('')
@@ -71,12 +79,37 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
         if (Object.keys(metaUpdates).length > 0) {
           await updateWorktreeMeta(wt.id, metaUpdates as { linkedIssue?: number; comment?: string })
         }
+
+        setActiveRepo(repoId)
+        setActiveView('terminal')
+        setSidebarOpen(true)
+        setSearchQuery('')
+        setShowActiveOnly(false)
+        setFilterRepoId(repoId)
+        setActiveWorktree(wt.id)
+        revealWorktreeInSidebar(wt.id)
       }
       handleOpenChange(false)
     } finally {
       setCreating(false)
     }
-  }, [repoId, name, linkedIssue, comment, createWorktree, updateWorktreeMeta, handleOpenChange])
+  }, [
+    repoId,
+    name,
+    linkedIssue,
+    comment,
+    createWorktree,
+    updateWorktreeMeta,
+    setActiveRepo,
+    setActiveView,
+    setSidebarOpen,
+    setSearchQuery,
+    setShowActiveOnly,
+    setFilterRepoId,
+    setActiveWorktree,
+    revealWorktreeInSidebar,
+    handleOpenChange
+  ])
 
   // Auto-select first repo when opening
   React.useEffect(() => {

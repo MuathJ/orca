@@ -1,6 +1,9 @@
-import { execSync } from 'child_process'
+import { execFile, execSync } from 'child_process'
 import { existsSync, statSync } from 'fs'
 import { join, basename } from 'path'
+import { promisify } from 'util'
+
+const execFileAsync = promisify(execFile)
 
 /**
  * Check if a path is a valid git repository (regular or bare).
@@ -119,28 +122,126 @@ export function getGitUsername(path: string): string {
   )
 }
 
-/**
- * Detect the default branch (main or master).
- */
-export function getDefaultBranch(path: string): string {
+function hasGitRef(path: string, ref: string): boolean {
   try {
-    // Check if 'main' branch exists
-    execSync('git rev-parse --verify refs/heads/main', {
+    execSync(`git rev-parse --verify ${ref}`, {
       cwd: path,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe']
     })
-    return 'main'
+    return true
   } catch {
-    try {
-      execSync('git rev-parse --verify refs/heads/master', {
-        cwd: path,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      })
-      return 'master'
-    } catch {
-      return 'main'
+    return false
+  }
+}
+
+/**
+ * Resolve the default base ref for new worktrees.
+ * Prefer the remote primary branch over a potentially stale local branch.
+ */
+export function getDefaultBaseRef(path: string): string {
+  try {
+    const ref = execSync('git symbolic-ref --quiet refs/remotes/origin/HEAD', {
+      cwd: path,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim()
+
+    if (ref) {
+      return ref.replace(/^refs\/remotes\//, '')
     }
+  } catch {
+    // Fall through to explicit remote branch probes.
+  }
+
+  if (hasGitRef(path, 'refs/remotes/origin/main')) return 'origin/main'
+  if (hasGitRef(path, 'refs/remotes/origin/master')) return 'origin/master'
+  if (hasGitRef(path, 'refs/heads/main')) return 'main'
+  if (hasGitRef(path, 'refs/heads/master')) return 'master'
+
+  return 'origin/main'
+}
+
+export async function getBaseRefDefault(path: string): Promise<string> {
+  return getDefaultBaseRefAsync(path)
+}
+
+async function getDefaultBaseRefAsync(path: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'],
+      {
+        cwd: path,
+        encoding: 'utf-8'
+      }
+    )
+    const ref = stdout.trim()
+    if (ref) {
+      return ref.replace(/^refs\/remotes\//, '')
+    }
+  } catch {
+    // Fall through to explicit remote branch probes.
+  }
+
+  if (await hasGitRefAsync(path, 'refs/remotes/origin/main')) return 'origin/main'
+  if (await hasGitRefAsync(path, 'refs/remotes/origin/master')) return 'origin/master'
+  if (await hasGitRefAsync(path, 'refs/heads/main')) return 'main'
+  if (await hasGitRefAsync(path, 'refs/heads/master')) return 'master'
+
+  return 'origin/main'
+}
+
+export async function searchBaseRefs(path: string, query: string, limit = 25): Promise<string[]> {
+  const normalizedQuery = normalizeRefSearchQuery(query)
+  if (!normalizedQuery) return []
+
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      [
+        'for-each-ref',
+        '--format=%(refname:short)',
+        '--sort=-committerdate',
+        `refs/remotes/origin/*${normalizedQuery}*`,
+        `refs/heads/*${normalizedQuery}*`
+      ],
+      {
+        cwd: path,
+        encoding: 'utf-8'
+      }
+    )
+
+    const seen = new Set<string>()
+    const refs = stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && line !== 'origin/HEAD')
+      .filter((line) => {
+        if (seen.has(line)) return false
+        seen.add(line)
+        return true
+      })
+      .slice(0, Math.max(1, limit))
+
+    return refs
+  } catch {
+    return []
+  }
+}
+
+function normalizeRefSearchQuery(query: string): string {
+  return query.trim().replace(/[\*\?\[\]\\]/g, '')
+}
+
+async function hasGitRefAsync(path: string, ref: string): Promise<boolean> {
+  try {
+    await execFileAsync('git', ['rev-parse', '--verify', ref], {
+      cwd: path,
+      encoding: 'utf-8'
+    })
+    return true
+  } catch {
+    return false
   }
 }

@@ -6,6 +6,7 @@ export interface Repo {
   badgeColor: string
   addedAt: number
   gitUsername?: string
+  worktreeBaseRef?: string
   hookSettings?: RepoHookSettings
 }
 
@@ -130,17 +131,21 @@ export interface GlobalSettings {
   terminalFontFamily: string
 }
 
+export interface PersistedUIState {
+  lastActiveRepoId: string | null
+  lastActiveWorktreeId: string | null
+  sidebarWidth: number
+  groupBy: 'none' | 'repo' | 'pr-status'
+  sortBy: 'name' | 'recent' | 'repo'
+}
+
 // ─── Persistence shape ──────────────────────────────────────────────
 export interface PersistedState {
   schemaVersion: number
   repos: Repo[]
   worktreeMeta: Record<string, WorktreeMeta>
   settings: GlobalSettings
-  ui: {
-    lastActiveRepoId: string | null
-    lastActiveWorktreeId: string | null
-    sidebarWidth: number
-  }
+  ui: PersistedUIState
   githubCache: {
     pr: Record<string, { data: PRInfo | null; fetchedAt: number }>
     issue: Record<string, { data: IssueInfo | null; fetchedAt: number }>

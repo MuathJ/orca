@@ -27,6 +27,10 @@ function Settings(): React.JSX.Element {
   const [repoHooksMap, setRepoHooksMap] = useState<
     Record<string, { hasHooks: boolean; hooks: OrcaHooks | null }>
   >({})
+  const [defaultBaseRef, setDefaultBaseRef] = useState('origin/main')
+  const [baseRefQuery, setBaseRefQuery] = useState('')
+  const [baseRefResults, setBaseRefResults] = useState<string[]>([])
+  const [isSearchingBaseRefs, setIsSearchingBaseRefs] = useState(false)
 
   useEffect(() => {
     fetchSettings()
@@ -61,6 +65,78 @@ function Settings(): React.JSX.Element {
       stale = true
     }
   }, [repos])
+
+  useEffect(() => {
+    let stale = false
+
+    const loadDefaultBaseRef = async (repoId: string) => {
+      try {
+        const result = await window.api.repos.getBaseRefDefault({ repoId })
+        if (stale) return
+        setDefaultBaseRef(result)
+      } catch {
+        if (stale) return
+        setDefaultBaseRef('origin/main')
+      }
+    }
+
+    if (!selectedRepoId) {
+      setDefaultBaseRef('origin/main')
+      setBaseRefQuery('')
+      setBaseRefResults([])
+    } else {
+      setBaseRefQuery('')
+      setBaseRefResults([])
+      void loadDefaultBaseRef(selectedRepoId)
+    }
+
+    return () => {
+      stale = true
+    }
+  }, [selectedRepoId])
+
+  useEffect(() => {
+    if (!selectedRepoId) return
+
+    const trimmedQuery = baseRefQuery.trim()
+    if (trimmedQuery.length < 2) {
+      setBaseRefResults([])
+      setIsSearchingBaseRefs(false)
+      return
+    }
+
+    let stale = false
+    setIsSearchingBaseRefs(true)
+
+    const timer = window.setTimeout(() => {
+      void window.api.repos
+        .searchBaseRefs({
+          repoId: selectedRepoId,
+          query: trimmedQuery,
+          limit: 20
+        })
+        .then((results) => {
+          if (!stale) {
+            setBaseRefResults(results)
+          }
+        })
+        .catch(() => {
+          if (!stale) {
+            setBaseRefResults([])
+          }
+        })
+        .finally(() => {
+          if (!stale) {
+            setIsSearchingBaseRefs(false)
+          }
+        })
+    }, 200)
+
+    return () => {
+      stale = true
+      window.clearTimeout(timer)
+    }
+  }, [selectedRepoId, baseRefQuery])
 
   useEffect(() => {
     if (repos.length === 0) {
@@ -111,6 +187,7 @@ function Settings(): React.JSX.Element {
   const selectedYamlHooks = selectedRepo ? (repoHooksMap[selectedRepo.id]?.hooks ?? null) : null
   const showGeneralPane = selectedPane === 'general' || !selectedRepo
   const displayedGitUsername = (selectedRepo ?? repos[0])?.gitUsername ?? ''
+  const effectiveBaseRef = selectedRepo?.worktreeBaseRef ?? defaultBaseRef
 
   const updateSelectedRepoHookSettings = (
     repo: Repo,
@@ -260,7 +337,11 @@ function Settings(): React.JSX.Element {
                   <button
                     role="switch"
                     aria-checked={settings.nestWorkspaces}
-                    onClick={() => updateSettings({ nestWorkspaces: !settings.nestWorkspaces })}
+                    onClick={() =>
+                      updateSettings({
+                        nestWorkspaces: !settings.nestWorkspaces
+                      })
+                    }
                     className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
                       settings.nestWorkspaces ? 'bg-foreground' : 'bg-muted-foreground/30'
                     }`}
@@ -454,7 +535,11 @@ function Settings(): React.JSX.Element {
                   <Label className="text-sm">Display Name</Label>
                   <Input
                     value={selectedRepo.displayName}
-                    onChange={(e) => updateRepo(selectedRepo.id, { displayName: e.target.value })}
+                    onChange={(e) =>
+                      updateRepo(selectedRepo.id, {
+                        displayName: e.target.value
+                      })
+                    }
                     className="h-9 text-sm"
                   />
                 </div>
@@ -476,6 +561,93 @@ function Settings(): React.JSX.Element {
                       />
                     ))}
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm">Default Worktree Base</Label>
+                  <div className="rounded-xl border bg-background/80 p-4 shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">
+                          {effectiveBaseRef}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {selectedRepo.worktreeBaseRef
+                            ? 'Pinned for this repo'
+                            : `Following primary branch (${defaultBaseRef})`}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setBaseRefQuery('')
+                          setBaseRefResults([])
+                          updateRepo(selectedRepo.id, {
+                            worktreeBaseRef: undefined
+                          })
+                        }}
+                        disabled={!selectedRepo.worktreeBaseRef}
+                      >
+                        Use Primary
+                      </Button>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <Input
+                        value={baseRefQuery}
+                        onChange={(e) => setBaseRefQuery(e.target.value)}
+                        placeholder="Search branches by name..."
+                        className="max-w-md"
+                      />
+                      <p className="text-xs text-muted-foreground">Type at least 2 characters.</p>
+                    </div>
+
+                    {isSearchingBaseRefs ? (
+                      <p className="mt-3 text-xs text-muted-foreground">Searching branches...</p>
+                    ) : null}
+
+                    {!isSearchingBaseRefs && baseRefQuery.trim().length >= 2 ? (
+                      baseRefResults.length > 0 ? (
+                        <ScrollArea className="mt-3 h-48 rounded-md border">
+                          <div className="p-1">
+                            {baseRefResults.map((ref) => (
+                              <button
+                                key={ref}
+                                onClick={() => {
+                                  setBaseRefQuery(ref)
+                                  setBaseRefResults([])
+                                  updateRepo(selectedRepo.id, {
+                                    worktreeBaseRef: ref
+                                  })
+                                }}
+                                className={`flex w-full items-center justify-between rounded-sm px-3 py-2 text-left text-sm transition-colors hover:bg-muted/60 ${
+                                  selectedRepo.worktreeBaseRef === ref
+                                    ? 'bg-accent text-accent-foreground'
+                                    : 'text-foreground'
+                                }`}
+                              >
+                                <span className="truncate">{ref}</span>
+                                {selectedRepo.worktreeBaseRef === ref ? (
+                                  <span className="text-[10px] uppercase tracking-[0.18em]">
+                                    Current
+                                  </span>
+                                ) : null}
+                              </button>
+                            ))}
+                          </div>
+                        </ScrollArea>
+                      ) : (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          No matching branches found.
+                        </p>
+                      )
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    New worktrees default to the repo primary branch unless you pin a different base
+                    here.
+                  </p>
                 </div>
               </section>
 

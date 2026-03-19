@@ -10,7 +10,7 @@ export interface RepoSlice {
   removeRepo: (repoId: string) => Promise<void>
   updateRepo: (
     repoId: string,
-    updates: Partial<Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings'>>
+    updates: Partial<Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings' | 'worktreeBaseRef'>>
   ) => Promise<void>
   setActiveRepo: (repoId: string | null) => void
 }

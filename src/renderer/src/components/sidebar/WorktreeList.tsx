@@ -88,6 +88,17 @@ function getPRGroupKey(
   return 'in-review'
 }
 
+function getGroupKeyForWorktree(
+  groupBy: 'none' | 'repo' | 'pr-status',
+  worktree: Worktree,
+  repoMap: Map<string, Repo>,
+  prCache: Record<string, unknown> | null
+): string | null {
+  if (groupBy === 'none') return null
+  if (groupBy === 'repo') return `repo:${worktree.repoId}`
+  return `pr:${getPRGroupKey(worktree, repoMap, prCache)}`
+}
+
 const WorktreeList = React.memo(function WorktreeList() {
   // ── Granular selectors (each is a primitive or shallow-stable ref) ──
   const worktreesByRepo = useAppStore((s) => s.worktreesByRepo)
@@ -99,6 +110,8 @@ const WorktreeList = React.memo(function WorktreeList() {
   const showActiveOnly = useAppStore((s) => s.showActiveOnly)
   const filterRepoId = useAppStore((s) => s.filterRepoId)
   const openModal = useAppStore((s) => s.openModal)
+  const pendingRevealWorktreeId = useAppStore((s) => s.pendingRevealWorktreeId)
+  const clearPendingRevealWorktreeId = useAppStore((s) => s.clearPendingRevealWorktreeId)
 
   // Only read tabsByWorktree when showActiveOnly is on (avoid subscription otherwise)
   const tabsByWorktree = useAppStore((s) => (showActiveOnly ? s.tabsByWorktree : null))
@@ -138,9 +151,9 @@ const WorktreeList = React.memo(function WorktreeList() {
     }
 
     // Filter active only
-    if (showActiveOnly && tabsByWorktree) {
+    if (showActiveOnly) {
       all = all.filter((w) => {
-        const tabs = tabsByWorktree[w.id] ?? []
+        const tabs = tabsByWorktree?.[w.id] ?? []
         return tabs.some((t) => t.ptyId)
       })
     }
@@ -189,7 +202,6 @@ const WorktreeList = React.memo(function WorktreeList() {
       return result
     }
 
-    // Group items
     const grouped = new Map<string, { label: string; items: Worktree[]; repo?: Repo }>()
     for (const w of worktrees) {
       let key: string
@@ -255,7 +267,24 @@ const WorktreeList = React.memo(function WorktreeList() {
     }
 
     return result
-  }, [groupBy, worktrees, repoMap, prCache, collapsedGroups])
+  }, [groupBy, worktrees, repoMap, prCache, collapsedGroups, tabsByWorktree])
+
+  React.useEffect(() => {
+    if (!pendingRevealWorktreeId || groupBy === 'none') return
+
+    const targetWorktree = worktrees.find((worktree) => worktree.id === pendingRevealWorktreeId)
+    if (!targetWorktree) return
+
+    const groupKey = getGroupKeyForWorktree(groupBy, targetWorktree, repoMap, prCache)
+    if (!groupKey) return
+
+    setCollapsedGroups((prev) => {
+      if (!prev.has(groupKey)) return prev
+      const next = new Set(prev)
+      next.delete(groupKey)
+      return next
+    })
+  }, [pendingRevealWorktreeId, groupBy, worktrees, repoMap, prCache])
 
   // ── TanStack Virtual ──────────────────────────────────────────
   const virtualizer = useVirtualizer({
@@ -268,6 +297,18 @@ const WorktreeList = React.memo(function WorktreeList() {
       return row.type === 'header' ? `hdr:${row.key}` : `wt:${row.worktree.id}`
     }
   })
+
+  React.useEffect(() => {
+    if (!pendingRevealWorktreeId) return
+
+    const targetIndex = rows.findIndex(
+      (row) => row.type === 'item' && row.worktree.id === pendingRevealWorktreeId
+    )
+    if (targetIndex === -1) return
+
+    virtualizer.scrollToIndex(targetIndex, { align: 'center' })
+    clearPendingRevealWorktreeId()
+  }, [pendingRevealWorktreeId, rows, virtualizer, clearPendingRevealWorktreeId])
 
   const handleCreateForRepo = useCallback(
     (repoId: string) => {
@@ -285,7 +326,7 @@ const WorktreeList = React.memo(function WorktreeList() {
   }
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-auto px-1 scrollbar-sleek">
+    <div ref={scrollRef} className="flex-1 overflow-auto px-1 scrollbar-sleek scroll-smooth">
       <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
         {virtualizer.getVirtualItems().map((vItem) => {
           const row = rows[vItem.index]

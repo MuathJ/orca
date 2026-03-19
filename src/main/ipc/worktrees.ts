@@ -3,7 +3,7 @@ import { join, basename } from 'path'
 import type { Store } from '../persistence'
 import type { Worktree, WorktreeMeta } from '../../shared/types'
 import { listWorktrees, addWorktree, removeWorktree } from '../git/worktree'
-import { getGitUsername, getDefaultBranch } from '../git/repo'
+import { getGitUsername, getDefaultBaseRef } from '../git/repo'
 import { getEffectiveHooks, loadHooks, runHook, hasHooksFile } from '../hooks'
 
 export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store): void {
@@ -64,7 +64,7 @@ export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store
       }
 
       // Determine base branch
-      const baseBranch = args.baseBranch || getDefaultBranch(repo.path)
+      const baseBranch = args.baseBranch || repo.worktreeBaseRef || getDefaultBaseRef(repo.path)
 
       addWorktree(repo.path, worktreePath, branchName, baseBranch)
 

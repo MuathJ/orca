@@ -24,8 +24,13 @@ function App(): React.JSX.Element {
   const fetchSettings = useAppStore((s) => s.fetchSettings)
   const initGitHubCache = useAppStore((s) => s.initGitHubCache)
   const hydrateWorkspaceSession = useAppStore((s) => s.hydrateWorkspaceSession)
+  const hydratePersistedUI = useAppStore((s) => s.hydratePersistedUI)
   const openModal = useAppStore((s) => s.openModal)
   const repos = useAppStore((s) => s.repos)
+  const sidebarWidth = useAppStore((s) => s.sidebarWidth)
+  const groupBy = useAppStore((s) => s.groupBy)
+  const sortBy = useAppStore((s) => s.sortBy)
+  const persistedUIReady = useAppStore((s) => s.persistedUIReady)
 
   // Subscribe to IPC push events
   useIpcEvents()
@@ -40,13 +45,22 @@ function App(): React.JSX.Element {
       try {
         await fetchRepos()
         await fetchAllWorktrees()
+        const persistedUI = await window.api.ui.get()
         const session = await window.api.session.get()
         if (!cancelled) {
+          hydratePersistedUI(persistedUI)
           hydrateWorkspaceSession(session)
         }
       } catch (error) {
         console.error('Failed to hydrate workspace session:', error)
         if (!cancelled) {
+          hydratePersistedUI({
+            lastActiveRepoId: null,
+            lastActiveWorktreeId: null,
+            sidebarWidth: 280,
+            groupBy: 'none',
+            sortBy: 'name'
+          })
           hydrateWorkspaceSession({
             activeRepoId: null,
             activeWorktreeId: null,
@@ -63,7 +77,14 @@ function App(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [fetchRepos, fetchAllWorktrees, fetchSettings, initGitHubCache, hydrateWorkspaceSession])
+  }, [
+    fetchRepos,
+    fetchAllWorktrees,
+    fetchSettings,
+    initGitHubCache,
+    hydratePersistedUI,
+    hydrateWorkspaceSession
+  ])
 
   useEffect(() => {
     if (!workspaceSessionReady) return
@@ -87,6 +108,20 @@ function App(): React.JSX.Element {
     tabsByWorktree,
     terminalLayoutsByTabId
   ])
+
+  useEffect(() => {
+    if (!persistedUIReady) return
+
+    const timer = window.setTimeout(() => {
+      void window.api.ui.set({
+        sidebarWidth,
+        groupBy,
+        sortBy
+      })
+    }, 150)
+
+    return () => window.clearTimeout(timer)
+  }, [persistedUIReady, sidebarWidth, groupBy, sortBy])
 
   // Apply theme to document
   useEffect(() => {

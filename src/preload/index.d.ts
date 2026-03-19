@@ -7,6 +7,7 @@ import type {
   IssueInfo,
   GlobalSettings,
   OrcaHooks,
+  PersistedUIState,
   WorkspaceSessionState
 } from '../../shared/types'
 
@@ -16,10 +17,12 @@ interface ReposApi {
   remove: (args: { repoId: string }) => Promise<void>
   update: (args: {
     repoId: string
-    updates: Partial<Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings'>>
+    updates: Partial<Pick<Repo, 'displayName' | 'badgeColor' | 'hookSettings' | 'worktreeBaseRef'>>
   }) => Promise<Repo>
   pickFolder: () => Promise<string | null>
   getGitUsername: (args: { repoId: string }) => Promise<string>
+  getBaseRefDefault: (args: { repoId: string }) => Promise<string>
+  searchBaseRefs: (args: { repoId: string; query: string; limit?: number }) => Promise<string[]>
   onChanged: (callback: () => void) => () => void
 }
 
@@ -79,6 +82,11 @@ interface SessionApi {
   set: (args: WorkspaceSessionState) => Promise<void>
 }
 
+interface UIApi {
+  get: () => Promise<PersistedUIState>
+  set: (args: Partial<PersistedUIState>) => Promise<void>
+}
+
 interface Api {
   repos: ReposApi
   worktrees: WorktreesApi
@@ -89,6 +97,7 @@ interface Api {
   hooks: HooksApi
   cache: CacheApi
   session: SessionApi
+  ui: UIApi
 }
 
 declare global {

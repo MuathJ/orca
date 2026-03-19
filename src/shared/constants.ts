@@ -1,6 +1,7 @@
 import type {
   GlobalSettings,
   PersistedState,
+  PersistedUIState,
   RepoHookSettings,
   WorkspaceSessionState
 } from './types'
@@ -46,13 +47,19 @@ export function getDefaultPersistedState(homedir: string): PersistedState {
     repos: [],
     worktreeMeta: {},
     settings: getDefaultSettings(homedir),
-    ui: {
-      lastActiveRepoId: null,
-      lastActiveWorktreeId: null,
-      sidebarWidth: 280
-    },
+    ui: getDefaultUIState(),
     githubCache: { pr: {}, issue: {} },
     workspaceSession: getDefaultWorkspaceSession()
+  }
+}
+
+export function getDefaultUIState(): PersistedUIState {
+  return {
+    lastActiveRepoId: null,
+    lastActiveWorktreeId: null,
+    sidebarWidth: 280,
+    groupBy: 'none',
+    sortBy: 'name'
   }
 }
 

@@ -12,6 +12,7 @@ import { registerGitHubHandlers } from './ipc/github'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerShellHandlers } from './ipc/shell'
 import { registerSessionHandlers } from './ipc/session'
+import { registerUIHandlers } from './ipc/ui'
 
 let mainWindow: BrowserWindow | null = null
 let store: Store | null = null
@@ -141,6 +142,7 @@ app.whenReady().then(() => {
   registerSettingsHandlers(store)
   registerShellHandlers()
   registerSessionHandlers(store)
+  registerUIHandlers(store)
 
   // macOS re-activate
   app.on('activate', function () {
