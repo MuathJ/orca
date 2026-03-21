@@ -21,6 +21,7 @@
     "build:icons": "bash icon/generate.sh",
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:linux": "electron-vite build && electron-builder --linux",
+    "release:rc": "npm version prerelease --preid=rc && git push --follow-tags",
     "release:patch": "npm version patch && git push --follow-tags",
     "release:minor": "npm version minor && git push --follow-tags",
     "release:major": "npm version major && git push --follow-tags"
@@ -66,7 +67,7 @@
     "oxlint": "^1.56.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-grab": "link:/Users/nwparker/projects/react-grab/packages/react-grab",
+    "react-grab": "^0.1.28",
     "tailwindcss": "^4.2.2",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"

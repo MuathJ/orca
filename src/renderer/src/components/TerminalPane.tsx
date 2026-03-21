@@ -619,9 +619,11 @@ export default function TerminalPane({
   // Connect a pane's terminal to a PTY via IPC transport
   const connectPanePty = (pane: ManagedPane, manager: PaneManager): void => {
     const onExit = (ptyId: string): void => {
+      // Always clear the dead PTY ID from the store to avoid stale state
+      clearTabPtyId(tabId, ptyId)
+
       const panes = manager.getPanes()
       if (panes.length <= 1) {
-        clearTabPtyId(tabId, ptyId)
         onPtyExitRef.current(ptyId)
         return
       }

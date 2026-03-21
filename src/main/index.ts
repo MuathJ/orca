@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, Menu, nativeImage, ipcMain, nativeTheme } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -40,6 +40,7 @@ function createWindow(): BrowserWindow {
     minHeight: 400,
     show: false,
     autoHideMenuBar: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#ffffff',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 12 } } : {}),
     icon: is.dev ? devIcon : icon,
@@ -202,6 +203,13 @@ app.whenReady().then(() => {
 
   // Initialize persistence
   store = new Store()
+
+  // Apply persisted theme before creating the window so that:
+  // 1. BrowserWindow gets the correct backgroundColor (no white flash)
+  // 2. nativeTheme.themeSource makes prefers-color-scheme report correctly
+  //    so the renderer's applySystemTheme() picks the right mode immediately
+  const theme = store.getSettings().theme ?? 'system'
+  nativeTheme.themeSource = theme
 
   // Create window
   mainWindow = createWindow()

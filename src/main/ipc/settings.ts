@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, nativeTheme } from 'electron'
 import type { Store } from '../persistence'
 import type { GlobalSettings, PersistedState } from '../../shared/types'
 import { listSystemFontFamilies } from '../system-fonts'
@@ -9,6 +9,9 @@ export function registerSettingsHandlers(store: Store): void {
   })
 
   ipcMain.handle('settings:set', (_event, args: Partial<GlobalSettings>) => {
+    if (args.theme) {
+      nativeTheme.themeSource = args.theme
+    }
     return store.updateSettings(args)
   })
 

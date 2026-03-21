@@ -77,10 +77,9 @@ export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store
       if (!created) throw new Error('Worktree created but not found in listing')
 
       const worktreeId = `${repo.id}::${worktreePath}`
-      const meta =
-        branchName === requestedName
-          ? undefined
-          : store.setWorktreeMeta(worktreeId, { displayName: requestedName })
+      const metaUpdates: Partial<WorktreeMeta> =
+        branchName === requestedName ? {} : { displayName: requestedName }
+      const meta = store.setWorktreeMeta(worktreeId, metaUpdates)
       const worktree = mergeWorktree(repo.id, created, meta)
 
       // Run setup hook asynchronously (don't block the UI)

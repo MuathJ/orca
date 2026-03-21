@@ -404,10 +404,13 @@ export class PaneManager {
       webglAddon: null
     }
 
-    // Focus handler: clicking a pane makes it active
+    // Focus handler: clicking a pane makes it active and explicitly focuses
+    // the terminal. We must call focus: true here because after DOM reparenting
+    // (e.g. splitPane moves the original pane into a flex container), xterm.js's
+    // native click-to-focus on its internal textarea may not fire reliably.
     container.addEventListener('pointerdown', () => {
       if (!this.destroyed && this.activePaneId !== id) {
-        this.setActivePane(id, { focus: false })
+        this.setActivePane(id, { focus: true })
       }
     })
 
@@ -503,6 +506,10 @@ export class PaneManager {
     el.style.minHeight = '0'
     el.style.position = 'relative'
     el.style.overflow = 'hidden'
+    // Clear any fixed width/height from createInitialPane so flex sizing
+    // controls the layout instead of the leftover 100% values.
+    el.style.width = ''
+    el.style.height = ''
   }
 
   private createDivider(isVertical: boolean): HTMLElement {

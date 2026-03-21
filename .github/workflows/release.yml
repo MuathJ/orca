@@ -6,7 +6,21 @@ on:
       - 'v*'
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create release with auto-generated notes
+        run: gh release create ${{ github.ref_name }} --generate-notes --prerelease=${{ contains(github.ref_name, 'rc') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   release:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
