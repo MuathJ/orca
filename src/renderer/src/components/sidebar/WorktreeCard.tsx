@@ -3,7 +3,7 @@ import { useAppStore } from '@/store'
 import { Badge } from '@/components/ui/badge'
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
-import { Bell, LoaderCircle, CircleDot } from 'lucide-react'
+import { Bell, LoaderCircle, CircleDot, CircleCheck, CircleX } from 'lucide-react'
 import RepoDotLabel from '@/components/repo/RepoDotLabel'
 import StatusIndicator from './StatusIndicator'
 import WorktreeContextMenu from './WorktreeContextMenu'
@@ -228,7 +228,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
             {worktree.displayName}
           </div>
 
-          {/* Line 2: Repo badge + branch + primary badge */}
+          {/* Line 2: Repo badge + branch + primary badge + CI status */}
           <div className="flex items-center gap-1 min-w-0">
             {repo && (
               <Badge
@@ -248,6 +248,24 @@ const WorktreeCard = React.memo(function WorktreeCard({
               <Badge variant="outline" className="h-4 px-1 text-[9px] rounded-sm shrink-0">
                 main
               </Badge>
+            )}
+            {pr && pr.checksStatus !== 'neutral' && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="ml-auto shrink-0 inline-flex items-center">
+                    {pr.checksStatus === 'success' && (
+                      <CircleCheck className="size-3 text-emerald-400" />
+                    )}
+                    {pr.checksStatus === 'failure' && <CircleX className="size-3 text-red-400" />}
+                    {pr.checksStatus === 'pending' && (
+                      <LoaderCircle className="size-3 text-yellow-400 animate-spin" />
+                    )}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>
+                  <span>CI checks {checksLabel(pr.checksStatus).toLowerCase()}</span>
+                </TooltipContent>
+              </Tooltip>
             )}
           </div>
 
