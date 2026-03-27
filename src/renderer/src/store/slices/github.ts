@@ -7,6 +7,10 @@ export type CacheEntry<T> = {
   fetchedAt: number
 }
 
+type FetchOptions = {
+  force?: boolean
+}
+
 const CACHE_TTL = 300_000 // 5 minutes (stale data shown instantly, then refreshed)
 const CHECKS_CACHE_TTL = 60_000 // 1 minute — checks change more frequently
 
@@ -39,9 +43,18 @@ export type GitHubSlice = {
   prCache: Record<string, CacheEntry<PRInfo>>
   issueCache: Record<string, CacheEntry<IssueInfo>>
   checksCache: Record<string, CacheEntry<PRCheckDetail[]>>
-  fetchPRForBranch: (repoPath: string, branch: string) => Promise<PRInfo | null>
+  fetchPRForBranch: (
+    repoPath: string,
+    branch: string,
+    options?: FetchOptions
+  ) => Promise<PRInfo | null>
   fetchIssue: (repoPath: string, number: number) => Promise<IssueInfo | null>
-  fetchPRChecks: (repoPath: string, prNumber: number, branch?: string) => Promise<PRCheckDetail[]>
+  fetchPRChecks: (
+    repoPath: string,
+    prNumber: number,
+    branch?: string,
+    options?: FetchOptions
+  ) => Promise<PRCheckDetail[]>
   initGitHubCache: () => Promise<void>
   refreshAllGitHub: () => void
   refreshGitHubForWorktree: (worktreeId: string) => void
@@ -66,10 +79,10 @@ export const createGitHubSlice: StateCreator<AppState, [], [], GitHubSlice> = (s
     }
   },
 
-  fetchPRForBranch: async (repoPath, branch) => {
+  fetchPRForBranch: async (repoPath, branch, options): Promise<PRInfo | null> => {
     const cacheKey = `${repoPath}::${branch}`
     const cached = get().prCache[cacheKey]
-    if (isFresh(cached)) {
+    if (!options?.force && isFresh(cached)) {
       return cached.data
     }
 
@@ -138,10 +151,10 @@ export const createGitHubSlice: StateCreator<AppState, [], [], GitHubSlice> = (s
     return request
   },
 
-  fetchPRChecks: async (repoPath, prNumber, branch?) => {
+  fetchPRChecks: async (repoPath, prNumber, branch, options): Promise<PRCheckDetail[]> => {
     const cacheKey = `${repoPath}::pr-checks::${prNumber}`
     const cached = get().checksCache[cacheKey]
-    if (isFresh(cached, CHECKS_CACHE_TTL)) {
+    if (!options?.force && isFresh(cached, CHECKS_CACHE_TTL)) {
       return cached.data ?? []
     }
 

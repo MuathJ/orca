@@ -29,6 +29,7 @@ export default function ChecksPanel(): React.JSX.Element {
   const [checks, setChecks] = useState<PRCheckDetail[]>([])
   const [checksLoading, setChecksLoading] = useState(false)
   const [emptyRefreshing, setEmptyRefreshing] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [titleSaving, setTitleSaving] = useState(false)
@@ -65,30 +66,39 @@ export default function ChecksPanel(): React.JSX.Element {
   }, [repo, branch, fetchPRForBranch])
 
   // Fetch checks via cached store method
-  const fetchChecks = useCallback(async () => {
-    if (!repo || !prNumber) {
-      return
-    }
-    setChecksLoading(true)
-    try {
-      const result = await fetchPRChecks(repo.path, prNumber, branch)
-      setChecks(result)
+  const fetchChecks = useCallback(
+    async ({
+      force = false,
+      prNumberOverride
+    }: { force?: boolean; prNumberOverride?: number | null } = {}) => {
+      const targetPRNumber = prNumberOverride ?? prNumber
+      if (!repo || !targetPRNumber) {
+        return
+      }
+      setChecksLoading(true)
+      try {
+        const result = await fetchPRChecks(repo.path, targetPRNumber, branch, { force })
+        setChecks(result)
 
-      // Exponential backoff: if checks haven't changed, double the interval (cap 120s).
-      // If they changed, reset to 30s.
-      const signature = JSON.stringify(result.map((c) => `${c.name}:${c.status}:${c.conclusion}`))
-      pollIntervalRef.current =
-        signature === prevChecksRef.current
-          ? Math.min(pollIntervalRef.current * 2, 120_000)
-          : 30_000
-      prevChecksRef.current = signature
-    } catch (err) {
-      console.warn('Failed to fetch PR checks:', err)
-      setChecks([])
-    } finally {
-      setChecksLoading(false)
-    }
-  }, [repo, prNumber, branch, fetchPRChecks])
+        // Exponential backoff: if checks haven't changed, double the interval (cap 120s).
+        // If they changed, reset to 30s.
+        const signature = JSON.stringify(
+          result.map((c) => `${c.name}:${c.status}:${c.conclusion}`)
+        )
+        pollIntervalRef.current =
+          signature === prevChecksRef.current
+            ? Math.min(pollIntervalRef.current * 2, 120_000)
+            : 30_000
+        prevChecksRef.current = signature
+      } catch (err) {
+        console.warn('Failed to fetch PR checks:', err)
+        setChecks([])
+      } finally {
+        setChecksLoading(false)
+      }
+    },
+    [repo, prNumber, branch, fetchPRChecks]
+  )
 
   // Fetch checks on mount + poll with exponential backoff
   useEffect(() => {
@@ -126,9 +136,17 @@ export default function ChecksPanel(): React.JSX.Element {
     if (!repo || !branch) {
       return
     }
-    // Refresh PR data + checks
-    await fetchPRForBranch(repo.path, branch)
-    await fetchChecks()
+    setIsRefreshing(true)
+    try {
+      const refreshedPR = await fetchPRForBranch(repo.path, branch, { force: true })
+      if (refreshedPR) {
+        await fetchChecks({ force: true, prNumberOverride: refreshedPR.number })
+      } else {
+        setChecks([])
+      }
+    } finally {
+      setIsRefreshing(false)
+    }
   }, [repo, branch, fetchPRForBranch, fetchChecks])
 
   const handleStartEdit = useCallback(() => {
@@ -159,7 +177,7 @@ export default function ChecksPanel(): React.JSX.Element {
       })
       if (ok) {
         // Re-fetch PR to get updated title
-        await fetchPRForBranch(repo.path, branch)
+        await fetchPRForBranch(repo.path, branch, { force: true })
       }
     } finally {
       setTitleSaving(false)
@@ -182,7 +200,7 @@ export default function ChecksPanel(): React.JSX.Element {
   // Refresh PR (passed to PRActions)
   const handleRefreshPR = useCallback(async () => {
     if (repo && branch) {
-      await fetchPRForBranch(repo.path, branch)
+      await fetchPRForBranch(repo.path, branch, { force: true })
     }
   }, [repo, branch, fetchPRForBranch])
 
@@ -275,8 +293,9 @@ export default function ChecksPanel(): React.JSX.Element {
             className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
             title="Refresh"
             onClick={() => void handleRefresh()}
+            disabled={isRefreshing}
           >
-            <RefreshCw className={cn('size-3.5', checksLoading && 'animate-spin')} />
+            <RefreshCw className={cn('size-3.5', isRefreshing && 'animate-spin')} />
           </button>
           <button
             className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
