@@ -39,7 +39,7 @@ npx skills add https://github.com/stablyai/orca --skill orca-cli
 
 ---
 
-## Quick Start: The First 60 Seconds
+## Quick Start
 
 1. **Connect:** Open Orca and connect your local Git repository.
 2. **Isolate:** Spin up a new worktree in one click (no more `git stash`).
