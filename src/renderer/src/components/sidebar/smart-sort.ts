@@ -73,7 +73,12 @@ function computeSmartScoreFromSignals(
   const activityAge = now - (worktree.lastActivityAt || 0)
   if (worktree.lastActivityAt > 0) {
     const ONE_DAY = 24 * 60 * 60 * 1000
-    score += 24 * Math.max(0, 1 - activityAge / ONE_DAY)
+    // Why 36: a just-created worktree has only this signal (no live tab yet,
+    // since the PTY spawns asynchronously after creation). Weight must exceed
+    // the max passive-signal combination for shutdown worktrees
+    // (isUnread 18 + PR 10 + issue 6 = 34) so brand-new worktrees always
+    // appear at the top of the "recent" sort immediately.
+    score += 36 * Math.max(0, 1 - activityAge / ONE_DAY)
   }
 
   return score
@@ -161,12 +166,12 @@ export function buildWorktreeComparator(
  *
  * Scoring:
  *   running AI job    → +60
+ *   recent activity   → +36 (decays over 24 hours)
  *   needs attention   → +35
  *   unread            → +18
  *   open terminal     → +12
  *   live branch PR    → +10
  *   linked issue      → +6
- *   recent activity   → +24 (decays over 24 hours)
  */
 export function computeSmartScore(
   worktree: Worktree,

@@ -231,12 +231,22 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         next[wId] = next[wId].map((t) => (t.id === tabId ? { ...t, ptyId } : t))
       }
       const existingPtyIds = s.ptyIdsByTabId[tabId] ?? []
+      // Why: when a brand-new tab in the active worktree receives its first
+      // PTY, the live-tab signal (+12) flips on. bumpWorktreeActivity (below)
+      // intentionally skips sortEpoch for the active worktree to prevent the
+      // reorder-on-click bug (PR #209), but that means the sort never sees
+      // the new signal. Bump sortEpoch here so a just-created worktree
+      // immediately reflects its live-tab score instead of waiting for an
+      // unrelated event to trigger a re-sort.
+      const isFirstPty = existingPtyIds.length === 0
+      const isActiveWorktree = worktreeId != null && s.activeWorktreeId === worktreeId
       return {
         tabsByWorktree: next,
         ptyIdsByTabId: {
           ...s.ptyIdsByTabId,
           [tabId]: existingPtyIds.includes(ptyId) ? existingPtyIds : [...existingPtyIds, ptyId]
-        }
+        },
+        ...(isFirstPty && isActiveWorktree ? { sortEpoch: s.sortEpoch + 1 } : {})
       }
     })
 

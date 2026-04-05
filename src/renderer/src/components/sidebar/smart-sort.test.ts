@@ -354,4 +354,31 @@ describe('buildWorktreeComparator', () => {
 
     expect(worktrees.map((worktree) => worktree.id)).toEqual(['active', 'background'])
   })
+
+  it('ranks a just-created worktree above shutdown worktrees with passive signals', () => {
+    const justCreated = makeWorktree({
+      id: 'new',
+      displayName: 'New',
+      lastActivityAt: NOW
+    })
+    // Shutdown worktree with max passive signals but no recent activity
+    const shutdown = makeWorktree({
+      id: 'shutdown',
+      displayName: 'Shutdown',
+      isUnread: true,
+      linkedIssue: 42,
+      lastActivityAt: NOW - 2 * 24 * 60 * 60 * 1000
+    })
+    const prCache = {
+      '/tmp/repo-1::shutdown': {
+        data: { number: 17 },
+        fetchedAt: NOW
+      }
+    }
+    const worktrees = [shutdown, justCreated]
+
+    worktrees.sort(buildWorktreeComparator('recent', null, repoMap, prCache, NOW))
+
+    expect(worktrees.map((worktree) => worktree.id)).toEqual(['new', 'shutdown'])
+  })
 })
