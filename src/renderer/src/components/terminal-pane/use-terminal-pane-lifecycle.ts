@@ -50,6 +50,7 @@ type UseTerminalPaneLifecycleDeps = {
   panePtyBindingsRef: React.RefObject<Map<number, IDisposable>>
   pendingWritesRef: React.RefObject<Map<number, string>>
   isActiveRef: React.RefObject<boolean>
+  effectiveVisibleRef: React.RefObject<boolean>
   onPtyExitRef: React.RefObject<(ptyId: string) => void>
   onPtyErrorRef?: React.RefObject<(paneId: number, message: string) => void>
   clearTabPtyId: (tabId: string, ptyId: string) => void
@@ -94,6 +95,7 @@ export function useTerminalPaneLifecycle({
   panePtyBindingsRef,
   pendingWritesRef,
   isActiveRef,
+  effectiveVisibleRef,
   onPtyExitRef,
   onPtyErrorRef,
   clearTabPtyId,
@@ -190,9 +192,11 @@ export function useTerminalPaneLifecycle({
       worktreeId,
       cwd,
       startup,
+      restoredPtyIdByPaneId: new Map<number, string>(),
       paneTransportsRef,
       pendingWritesRef,
       isActiveRef,
+      effectiveVisibleRef,
       onPtyExitRef,
       onPtyErrorRef,
       clearTabPtyId,
@@ -333,6 +337,22 @@ export function useTerminalPaneLifecycle({
     managerRef.current = manager
     const restoredPaneByLeafId = replayTerminalLayout(manager, initialLayoutRef.current, isActive)
 
+    // Why: populate the per-pane PTY ID map *synchronously* after replay but
+    // before the rAF callbacks in connectPanePty fire. replayTerminalLayout
+    // creates panes (scheduling rAFs for PTY attach), then returns the
+    // old-leafId → new-paneId mapping. We translate the snapshot's
+    // leafId → ptyId entries into paneId → ptyId here so the deferred rAFs
+    // can look up the correct PTY for each pane.
+    const savedPtyIds = initialLayoutRef.current.ptyIdsByLeafId
+    if (savedPtyIds) {
+      for (const [leafId, ptyId] of Object.entries(savedPtyIds)) {
+        const paneId = restoredPaneByLeafId.get(leafId)
+        if (paneId != null) {
+          ptyDeps.restoredPtyIdByPaneId.set(paneId, ptyId)
+        }
+      }
+    }
+
     restoreScrollbackBuffers(
       manager,
       initialLayoutRef.current.buffersByLeafId,
@@ -445,8 +465,19 @@ export function useTerminalPaneLifecycle({
         disposable.dispose()
       }
       linkDisposables.clear()
+      const terminalTabStillExists = (useAppStore.getState().tabsByWorktree[worktreeId] ?? []).some(
+        (tab) => tab.id === tabId
+      )
       for (const transport of paneTransports.values()) {
-        transport.destroy?.()
+        if (terminalTabStillExists && transport.getPtyId()) {
+          // Why: only preserve PTYs when this unmount is a layout-only remount
+          // and the terminal tab still exists in store. Real close paths remove
+          // the tab before React unmounts, so preserving here would leak the
+          // backend shell after the UI tab is gone.
+          transport.preserve?.()
+        } else {
+          transport.destroy?.()
+        }
       }
       for (const panePtyBinding of panePtyBindings.values()) {
         panePtyBinding.dispose()

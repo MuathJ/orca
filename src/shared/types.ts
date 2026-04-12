@@ -55,16 +55,31 @@ export type WorktreeMeta = {
   lastActivityAt: number
 }
 
+// ─── Tab Group Layout ─────────────────────────────────────────────
+export type TabGroupSplitDirection = 'horizontal' | 'vertical'
+
+export type TabGroupLayoutNode =
+  | { type: 'leaf'; groupId: string }
+  | {
+      type: 'split'
+      direction: TabGroupSplitDirection
+      first: TabGroupLayoutNode
+      second: TabGroupLayoutNode
+    }
+
 // ─── Unified Tab ────────────────────────────────────────────────────
 export type TabContentType = 'terminal' | 'editor' | 'diff' | 'conflict-review' | 'browser'
 
 export type WorkspaceVisibleTabType = 'terminal' | 'editor' | 'browser'
 
 export type Tab = {
-  id: string // UUID for terminals, filePath for editors (preserves current convention)
+  id: string // workspace item instance ID
   groupId: string
   worktreeId: string
   contentType: TabContentType
+  /** Underlying runtime/document entity. Terminal items point at a terminal tab
+   *  runtime ID; editor/diff items point at the shared document/file ID. */
+  entityId: string
   label: string // display title (auto-derived from PTY or filename)
   customLabel: string | null
   color: string | null
@@ -139,6 +154,9 @@ export type TerminalLayoutSnapshot = {
   /** User-assigned pane titles, keyed by leafId (e.g. "pane:3").
    *  Persisted alongside buffers via the existing session:set flow. */
   titlesByLeafId?: Record<string, string>
+  /** Live PTY IDs per leaf, captured during layout snapshots so multi-pane
+   *  terminals can re-attach each pane to its own shell after a remount. */
+  ptyIdsByLeafId?: Record<string, string>
 }
 
 /** Minimal subset of OpenFile persisted across restarts.
@@ -181,6 +199,8 @@ export type WorkspaceSessionState = {
   unifiedTabs?: Record<string, Tab[]>
   /** Tab group model — present alongside unifiedTabs. */
   tabGroups?: Record<string, TabGroup[]>
+  tabGroupLayouts?: Record<string, TabGroupLayoutNode>
+  activeGroupIdByWorktree?: Record<string, string>
 }
 
 // ─── GitHub ──────────────────────────────────────────────────────────
