@@ -34,7 +34,6 @@ function createTestStore() {
         unifiedTabsByWorktree: {},
         groupsByWorktree: {},
         activeGroupIdByWorktree: {},
-        layoutByWorktree: {},
         openFiles: [],
         editorDrafts: {},
         markdownViewMode: {},
@@ -272,10 +271,6 @@ describe('removeWorktree state cleanup', () => {
       activeGroupIdByWorktree: {
         'repo1::/path/wt1': 'group-1',
         'repo1::/path/wt2': 'group-2'
-      },
-      layoutByWorktree: {
-        'repo1::/path/wt1': { type: 'leaf', groupId: 'group-1' },
-        'repo1::/path/wt2': { type: 'leaf', groupId: 'group-2' }
       }
     } as unknown as Partial<AppState>)
 
@@ -292,9 +287,6 @@ describe('removeWorktree state cleanup', () => {
     })
     expect(store.getState().activeGroupIdByWorktree).toEqual({
       'repo1::/path/wt2': 'group-2'
-    })
-    expect(store.getState().layoutByWorktree).toEqual({
-      'repo1::/path/wt2': { type: 'leaf', groupId: 'group-2' }
     })
   })
 
