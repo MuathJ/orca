@@ -2,15 +2,7 @@
 
 ## Code Comments: Document the "Why"
 
-When writing or modifying code driven by a design doc or non-obvious constraint, you **must** add a comment explaining **why** the code behaves the way it does. "What" is visible in the code; "why" is not. Target these categories:
-
-- Safety constraints (suppressed actions, guarded entry points)
-- Fallback/error-handling choices and their rationale
-- Architectural boundaries (IPC separation, which surface owns a feature)
-- Compatibility shims (fields that exist for downstream plumbing, not semantics)
-- Intentional omissions (skipped data, unsupported edge cases)
-
-If the design doc has a gotcha, the code must have a comment. A maintainer who hasn't read the doc should still understand why the code must not be changed casually.
+When writing or modifying code driven by a design doc or non-obvious constraint, you **must** add a comment explaining **why** the code behaves the way it does.
 
 ## Worktree Safety
 
