@@ -8,9 +8,20 @@ type StoreState = {
   settings: { promptCacheTimerEnabled?: boolean } | null
 }
 
+type ConnectCallbacks = {
+  onData?: (data: string) => void
+  onError?: (msg: string) => void
+}
+
 type MockTransport = {
   attach: ReturnType<typeof vi.fn>
-  connect: ReturnType<typeof vi.fn>
+  connect: ReturnType<typeof vi.fn> & {
+    mockImplementation: (
+      impl: (
+        opts: { callbacks?: ConnectCallbacks } & Record<string, unknown>
+      ) => Promise<string | null>
+    ) => unknown
+  }
   sendInput: ReturnType<typeof vi.fn>
   resize: ReturnType<typeof vi.fn>
   getPtyId: ReturnType<typeof vi.fn>
@@ -59,13 +70,13 @@ function createMockTransport(initialPtyId: string | null = null): MockTransport 
     attach: vi.fn(({ existingPtyId }: { existingPtyId: string }) => {
       ptyId = existingPtyId
     }),
-    connect: vi.fn().mockImplementation(async () => {
-      return ptyId
-    }),
+    connect: vi.fn(
+      async (_opts: { callbacks?: ConnectCallbacks } & Record<string, unknown>) => ptyId
+    ),
     sendInput: vi.fn(() => true),
     resize: vi.fn(() => true),
     getPtyId: vi.fn(() => ptyId)
-  }
+  } as MockTransport
 }
 
 function createPane(paneId: number) {
@@ -159,6 +170,97 @@ describe('connectPanePty', () => {
     } else {
       delete (globalThis as { cancelAnimationFrame?: typeof cancelAnimationFrame })
         .cancelAnimationFrame
+    }
+  })
+
+  it('does not send startup command via sendInput for local connections', async () => {
+    // Why: the local PTY provider already writes the command via
+    // writeStartupCommandWhenShellReady — sending it again from the renderer
+    // would cause the command to appear twice in the terminal.
+    const { connectPanePty } = await import('./pty-connection')
+
+    const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+      capturedDataCallback.current = callbacks.onData ?? null
+      return 'pty-local-1'
+    })
+    transportFactoryQueue.push(transport)
+
+    // Local connection: no connectionId
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: null }]
+    }
+
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const deps = createDeps({ startup: { command: "claude 'say test'" } })
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    expect(capturedDataCallback.current).not.toBeNull()
+
+    // Simulate PTY output (shell prompt arriving)
+    capturedDataCallback.current?.('(base) user@host $ ')
+
+    // Even after the debounce window, the renderer must not inject the command
+    // because the main process already wrote it via writeStartupCommandWhenShellReady.
+    expect(transport.sendInput).not.toHaveBeenCalledWith(
+      expect.stringContaining("claude 'say test'")
+    )
+  })
+
+  it('sends startup command via sendInput for SSH connections (relay has no shell-ready mechanism)', async () => {
+    // Capture the setTimeout callback directly so we can fire it without
+    // vi.useFakeTimers() (which would also replace the rAF mock from beforeEach).
+    const pendingTimeouts: (() => void)[] = []
+    const originalSetTimeout = globalThis.setTimeout
+    globalThis.setTimeout = vi.fn((fn: () => void) => {
+      pendingTimeouts.push(fn)
+      return 999 as unknown as ReturnType<typeof setTimeout>
+    }) as unknown as typeof setTimeout
+
+    try {
+      const { connectPanePty } = await import('./pty-connection')
+
+      const capturedDataCallback: { current: ((data: string) => void) | null } = {
+        current: null
+      }
+      const transport = createMockTransport()
+      transport.connect.mockImplementation(
+        async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+          capturedDataCallback.current = callbacks.onData ?? null
+          return 'pty-ssh-1'
+        }
+      )
+      transportFactoryQueue.push(transport)
+
+      // SSH connection: connectionId is set, relay ignores the command field
+      mockStoreState = {
+        ...mockStoreState,
+        tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+        repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }]
+      }
+
+      const pane = createPane(1)
+      const manager = createManager(1)
+      const deps = createDeps({ startup: { command: "claude 'say test'" } })
+
+      connectPanePty(pane as never, manager as never, deps as never)
+      expect(capturedDataCallback.current).not.toBeNull()
+
+      // Simulate shell prompt arriving — queues the debounce timer
+      capturedDataCallback.current?.('user@remote $ ')
+
+      // Fire all queued setTimeout callbacks (the debounce)
+      for (const fn of pendingTimeouts) {
+        fn()
+      }
+
+      expect(transport.sendInput).toHaveBeenCalledWith("claude 'say test'\r")
+    } finally {
+      globalThis.setTimeout = originalSetTimeout
     }
   })
 
