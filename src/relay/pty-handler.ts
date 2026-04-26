@@ -165,6 +165,12 @@ export class PtyHandler {
     // Replay buffered output. During pty.spawn({ sessionId }) the renderer has
     // not registered replay handlers yet, so return the bytes to the caller
     // instead of notifying them too early.
+    // Why: the buffer is NOT cleared after replay. It always holds the last
+    // 100 KB of raw output (capped in onData). The client clears xterm before
+    // writing the replay, so returning the full buffer on every attach does
+    // not cause duplication. Keeping the buffer intact means a second app
+    // restart still replays the full terminal history instead of only output
+    // generated since the previous attach.
     if (managed.buffered) {
       if (params.suppressReplayNotification) {
         return { replay: managed.buffered }
@@ -345,10 +351,9 @@ export class PtyHandler {
 
   startGraceTimer(onExpire: () => void): void {
     this.cancelGraceTimer()
-    if (this.ptys.size === 0) {
-      onExpire()
-      return
-    }
+    // Why: always wait the full grace period even with zero PTYs.  A detached
+    // relay may have no PTYs yet but a --connect client will arrive shortly.
+    // Firing immediately would kill the relay before anyone could connect.
     this.graceTimer = setTimeout(() => {
       onExpire()
     }, this.graceTimeMs)

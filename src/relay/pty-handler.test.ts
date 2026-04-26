@@ -1,3 +1,4 @@
+/* oxlint-disable max-lines */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 const { mockPtySpawn, mockPtyInstance } = vi.hoisted(() => ({
@@ -294,9 +295,11 @@ describe('PtyHandler', () => {
     )
   })
 
-  it('grace timer fires immediately when no PTYs exist', () => {
+  it('grace timer waits full period even when no PTYs exist', () => {
     const onExpire = vi.fn()
     handler.startGraceTimer(onExpire)
+    expect(onExpire).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(5 * 60 * 1000)
     expect(onExpire).toHaveBeenCalledTimes(1)
   })
 
@@ -332,6 +335,72 @@ describe('PtyHandler', () => {
 
     vi.advanceTimersByTime(5 * 60 * 1000)
     expect(onExpire).not.toHaveBeenCalled()
+  })
+
+  it('attach preserves buffer so repeated attaches return the same data plus new output', async () => {
+    let dataCallback: ((data: string) => void) | undefined
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataCallback = cb
+      }),
+      onExit: vi.fn()
+    })
+
+    await dispatcher.callRequest('pty.spawn', {})
+    dataCallback!('initial output')
+
+    const r1 = await dispatcher.callRequest('pty.attach', {
+      id: 'pty-1',
+      suppressReplayNotification: true
+    })
+    expect(r1).toEqual({ replay: 'initial output' })
+
+    dataCallback!(' more')
+
+    const r2 = await dispatcher.callRequest('pty.attach', {
+      id: 'pty-1',
+      suppressReplayNotification: true
+    })
+    expect(r2).toEqual({ replay: 'initial output more' })
+  })
+
+  it('second app restart still replays full buffer', async () => {
+    let dataCallback: ((data: string) => void) | undefined
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataCallback = cb
+      }),
+      onExit: vi.fn()
+    })
+
+    await dispatcher.callRequest('pty.spawn', {})
+
+    dataCallback!('$ while true; do date; done\r\n')
+    dataCallback!('Mon Apr 28\r\n')
+
+    await dispatcher.callRequest('pty.attach', {
+      id: 'pty-1',
+      suppressReplayNotification: true
+    })
+
+    dataCallback!('Tue Apr 29\r\n')
+
+    await dispatcher.callRequest('pty.attach', {
+      id: 'pty-1',
+      suppressReplayNotification: true
+    })
+
+    dataCallback!('Wed Apr 30\r\n')
+
+    const result = await dispatcher.callRequest('pty.attach', {
+      id: 'pty-1',
+      suppressReplayNotification: true
+    })
+    expect(result).toEqual({
+      replay: '$ while true; do date; done\r\nMon Apr 28\r\nTue Apr 29\r\nWed Apr 30\r\n'
+    })
   })
 
   it('dispose kills all PTYs', async () => {

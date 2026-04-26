@@ -5,6 +5,7 @@ import type {
   SetupSplitDirection,
   TerminalLayoutSnapshot,
   TerminalTab,
+  Worktree,
   WorkspaceSessionState
 } from '../../../../shared/types'
 import { scheduleRuntimeGraphSync } from '@/runtime/sync-runtime-graph'
@@ -92,6 +93,12 @@ export type TerminalSlice = {
    *  a daemon, the old ptyId doubles as the daemon sessionId — passing it to
    *  spawn triggers createOrAttach which returns the surviving terminal snapshot. */
   pendingReconnectPtyIdByTabId: Record<string, string>
+  // Why: relay session IDs (e.g. pty-0) are stored in tab.ptyId, but
+  // clearTabPtyId nulls it on disconnect.  This map preserves the last
+  // known ID so the session save can capture it even when the relay mux
+  // is temporarily down — without it, remoteSessionIdsByTabId would be
+  // empty and the relay PTY could not be reattached after restart.
+  lastKnownRelayPtyIdByTabId: Record<string, string>
   /** ANSI snapshots returned by daemon reattach, keyed by the new ptyId.
    *  TerminalPane writes these to xterm.js to restore visual state. */
   pendingSnapshotByPtyId: Record<
@@ -206,6 +213,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   pendingReconnectWorktreeIds: [],
   pendingReconnectTabByWorktree: {},
   pendingReconnectPtyIdByTabId: {},
+  lastKnownRelayPtyIdByTabId: {},
   pendingSnapshotByPtyId: {},
   pendingColdRestoreByPtyId: {},
   deferredSshReconnectTargets: [],
@@ -372,6 +380,8 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       delete nextLayouts[tabId]
       const nextPtyIdsByTabId = { ...s.ptyIdsByTabId }
       delete nextPtyIdsByTabId[tabId]
+      const nextLastKnownRelay = { ...s.lastKnownRelayPtyIdByTabId }
+      delete nextLastKnownRelay[tabId]
       const nextRuntimePaneTitlesByTabId = { ...s.runtimePaneTitlesByTabId }
       delete nextRuntimePaneTitlesByTabId[tabId]
       // Why: preserve the unreadTerminalTabs reference when the closing tab had
@@ -440,6 +450,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         activeTabId: s.activeTabId === tabId ? null : s.activeTabId,
         activeTabIdByWorktree: nextActiveTabIdByWorktree,
         ptyIdsByTabId: nextPtyIdsByTabId,
+        lastKnownRelayPtyIdByTabId: nextLastKnownRelay,
         runtimePaneTitlesByTabId: nextRuntimePaneTitlesByTabId,
         // Why: skip writing unreadTerminalTabs when the reference is unchanged —
         // avoids a no-op top-level state allocation that would force re-evaluation
@@ -787,6 +798,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           ...s.ptyIdsByTabId,
           [tabId]: existingPtyIds.includes(ptyId) ? existingPtyIds : [...existingPtyIds, ptyId]
         },
+        lastKnownRelayPtyIdByTabId: {
+          ...s.lastKnownRelayPtyIdByTabId,
+          [tabId]: ptyId
+        },
         ...(isFirstPty && isActiveWorktree ? { sortEpoch: s.sortEpoch + 1 } : {})
       }
     })
@@ -830,9 +845,20 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           delete nextCodexRestartNoticeByPtyId[currentPtyId]
         }
       }
+      // Why: when a specific ptyId is passed, the PTY actually exited (not
+      // just disconnected). Remove its lastKnown entry so session-save does
+      // not attempt to reattach a dead relay PTY on next restart. When no
+      // ptyId is passed (bulk clear on connection_lost), preserve lastKnown
+      // because the relay still has the PTY alive during its grace period.
+      const nextLastKnownRelay = { ...s.lastKnownRelayPtyIdByTabId }
+      if (ptyId && nextLastKnownRelay[tabId] === ptyId) {
+        delete nextLastKnownRelay[tabId]
+      }
+
       return {
         tabsByWorktree: next,
         ptyIdsByTabId: nextPtyIdsByTabId,
+        lastKnownRelayPtyIdByTabId: nextLastKnownRelay,
         pendingCodexPaneRestartIds: nextPendingCodexPaneRestartIds,
         codexRestartNoticeByPtyId: nextCodexRestartNoticeByPtyId
       }
@@ -939,9 +965,19 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       const isActiveWorktree = s.activeWorktreeId === worktreeId
       const shouldResetGlobalBrowser = isActiveWorktree && hadBrowserTabs
 
+      // Why: intentional shutdown kills the relay PTY. Remove the tab's
+      // lastKnown entry so session-save does not persist a dead session ID
+      // into remoteSessionIdsByTabId, which would cause the next restart
+      // to attempt reattaching to a PTY that no longer exists.
+      const nextLastKnownRelay = { ...s.lastKnownRelayPtyIdByTabId }
+      for (const tab of tabs) {
+        delete nextLastKnownRelay[tab.id]
+      }
+
       return {
         tabsByWorktree: nextTabsByWorktree,
         ptyIdsByTabId: nextPtyIdsByTabId,
+        lastKnownRelayPtyIdByTabId: nextLastKnownRelay,
         runtimePaneTitlesByTabId: nextRuntimePaneTitlesByTabId,
         suppressedPtyExitIds: nextSuppressedPtyExitIds,
         pendingCodexPaneRestartIds: nextPendingCodexPaneRestartIds,
@@ -1195,6 +1231,24 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           .flat()
           .map((worktree) => worktree.id)
       )
+      // Why: SSH repos' worktrees are discovered at runtime via the relay, not
+      // persisted in orca-data.json. On restart, worktreesByRepo for SSH repos
+      // may still be empty when hydration runs (the SSH connection and worktree
+      // fetch race with session hydration). Accept session worktree IDs whose
+      // SSH-backed repo exists in the repos list — they will be populated once
+      // SSH reconnects. Without this, tabs for SSH worktrees are silently
+      // dropped during hydration and the session save overwrites the good data.
+      // Only SSH repos need this: local worktrees are persisted and a missing
+      // local worktree genuinely means it was deleted.
+      const sshRepoIds = new Set(s.repos.filter((r) => r.connectionId).map((r) => r.id))
+      for (const worktreeId of Object.keys(session.tabsByWorktree)) {
+        if (!validWorktreeIds.has(worktreeId)) {
+          const repoId = worktreeId.split('::')[0]
+          if (sshRepoIds.has(repoId)) {
+            validWorktreeIds.add(worktreeId)
+          }
+        }
+      }
       const tabsByWorktree: Record<string, TerminalTab[]> = Object.fromEntries(
         Object.entries(session.tabsByWorktree)
           .filter(([worktreeId]) => validWorktreeIds.has(worktreeId))
@@ -1245,10 +1299,16 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       // raw session data BEFORE clearTransientTerminalState nulled the ptyIds.
       // This ensures reconnectPersistedTerminals binds PTYs to the correct
       // tabs, not just tabs[0], which matters for multi-tab worktrees.
+      // Also include tabs whose relay session IDs were preserved in
+      // remoteSessionIdsByTabId — those tabs were disconnected before shutdown
+      // (ptyId was null) but the relay still has their PTY alive.
+      const remoteSessionIds = session.remoteSessionIdsByTabId ?? {}
       const pendingReconnectTabByWorktree: Record<string, string[]> = {}
       for (const worktreeId of pendingReconnectWorktreeIds) {
         const rawTabs = session.tabsByWorktree[worktreeId] ?? []
-        const liveTabIds = rawTabs.filter((t) => t.ptyId && validTabIds.has(t.id)).map((t) => t.id)
+        const liveTabIds = rawTabs
+          .filter((t) => (t.ptyId || remoteSessionIds[t.id]) && validTabIds.has(t.id))
+          .map((t) => t.id)
         if (liveTabIds.length > 0) {
           pendingReconnectTabByWorktree[worktreeId] = liveTabIds
         }
@@ -1286,7 +1346,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       // daemon. SSH-backed tabs need their session IDs regardless of the
       // experimentalTerminalDaemon setting. The existing loop above correctly
       // skips SSH repos (connectionId check), so there is no overlap.
-      const remoteSessionIds = session.remoteSessionIdsByTabId ?? {}
+      console.warn(
+        `[terminals-hydration] remoteSessionIdsByTabId:`,
+        JSON.stringify(remoteSessionIds)
+      )
       for (const [tabId, sessionId] of Object.entries(remoteSessionIds)) {
         if (validTabIds.has(tabId)) {
           pendingReconnectPtyIdByTabId[tabId] = sessionId
@@ -1316,12 +1379,57 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         }
       }
 
+      // Why: SSH worktrees are not persisted in worktreesByRepo (they're
+      // discovered at runtime via the relay). On restart, worktreesByRepo for
+      // SSH repos is empty, so the sidebar can't render them. Synthesize
+      // placeholder entries from the session's tabsByWorktree so the sidebar
+      // shows them immediately. The placeholders will be replaced with full
+      // data once SSH reconnects and fetchWorktrees runs.
+      const worktreesByRepo = { ...s.worktreesByRepo }
+      for (const worktreeId of Object.keys(tabsByWorktree)) {
+        const repoId = worktreeId.split('::')[0]
+        if (!sshRepoIds.has(repoId)) {
+          continue
+        }
+        const existing = (worktreesByRepo[repoId] ?? []).find((w) => w.id === worktreeId)
+        if (existing) {
+          continue
+        }
+        // Why: worktreeId is `${repoId}::${path}` and POSIX paths can legally
+        // contain `::`. Split only on the first separator to preserve the full path.
+        const separatorIdx = worktreeId.indexOf('::')
+        const path = separatorIdx >= 0 ? worktreeId.slice(separatorIdx + 2) : ''
+        // Why: SSH worktree paths may use backslash separators on Windows remotes.
+        const displayName = path.split(/[/\\]/).pop() || path
+        const placeholder: Worktree = {
+          id: worktreeId,
+          repoId,
+          displayName,
+          comment: '',
+          linkedIssue: null,
+          linkedPR: null,
+          linkedLinearIssue: null,
+          isArchived: false,
+          isUnread: false,
+          isPinned: false,
+          sortOrder: 0,
+          lastActivityAt: 0,
+          path,
+          head: '',
+          branch: '',
+          isBare: false,
+          isMainWorktree: false
+        }
+        worktreesByRepo[repoId] = [...(worktreesByRepo[repoId] ?? []), placeholder]
+      }
+
       return {
         activeRepoId,
         activeWorktreeId,
         activeTabId,
         activeTabIdByWorktree,
         tabsByWorktree,
+        worktreesByRepo,
         pendingReconnectWorktreeIds,
         pendingReconnectTabByWorktree,
         pendingReconnectPtyIdByTabId,
@@ -1394,10 +1502,12 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       // SSH connection is active. Without the active-connection check, we'd try
       // to reattach to a relay that isn't connected yet (the deferred/passphrase
       // targets), which would fail.
-      const sshConnected =
-        repo?.connectionId != null &&
-        get().sshConnectionStates.get(repo.connectionId)?.status === 'connected'
+      const sshState = repo?.connectionId ? get().sshConnectionStates.get(repo.connectionId) : null
+      const sshConnected = repo?.connectionId != null && sshState?.status === 'connected'
       const supportsDeferredReattach = !repo?.connectionId || sshConnected
+      console.warn(
+        `[reconnect-terminals] worktree=${worktreeId} connectionId=${repo?.connectionId} sshStatus=${sshState?.status} supportsDeferredReattach=${supportsDeferredReattach}`
+      )
       const targetTabIds = pendingReconnectTabByWorktree[worktreeId] ?? []
       const tabsToReconnect: TerminalTab[] =
         targetTabIds.length > 0
@@ -1417,13 +1527,16 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         const hasLeafMappings = Object.keys(leafPtyMap).length > 0
 
         // Why: restore ptyId on the tab so getWorktreeStatus() sees it as
-        // active (green dot) even before the terminal pane mounts. For
-        // single-pane tabs the tab-level ptyId doubles as the daemon
-        // session ID. For split-pane tabs the layout's ptyIdsByLeafId
-        // carries per-leaf mappings; connectPanePty reads those via
-        // restoredPtyIdByLeafId, but the tab still needs a ptyId for
-        // status and orphan detection.
-        if (supportsDeferredReattach && tabLevelPtyId) {
+        // active (green dot) even before the terminal pane mounts — including
+        // deferred SSH worktrees whose connection isn't established yet. Without
+        // this, the sidebar "show active only" filter hides SSH worktrees and
+        // the user must manually search for them. The actual PTY reattach is
+        // handled later by pty-connection.ts when the terminal pane mounts;
+        // this block only sets the visual state.
+        console.warn(
+          `[reconnect-terminals] tab=${tabId} tabLevelPtyId=${tabLevelPtyId} supportsDeferredReattach=${supportsDeferredReattach} hasLeafMappings=${hasLeafMappings}`
+        )
+        if (tabLevelPtyId) {
           set((s) => {
             const next = { ...s.tabsByWorktree }
             if (!next[worktreeId]) {

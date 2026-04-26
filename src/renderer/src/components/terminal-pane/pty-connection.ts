@@ -408,6 +408,10 @@ export function connectPanePty(
     // stays engaged via the write-completion callback until xterm finishes
     // parsing — so writing directly here is both correct and safe.
     const replayDataCallback = (data: string): void => {
+      // Why: the relay's replay buffer holds the full last 100 KB of output,
+      // including data already rendered in xterm before the disconnect.
+      // Clearing before writing prevents duplication on SSH reconnect.
+      replayIntoTerminal(pane, deps.replayingPanesRef, '\x1b[2J\x1b[3J\x1b[H')
       replayIntoTerminal(pane, deps.replayingPanesRef, data)
     }
 
@@ -507,7 +511,17 @@ export function connectPanePty(
         replayIntoTerminal(pane, deps.replayingPanesRef, POST_REPLAY_FOCUS_REPORTING_RESET)
       }
       if (connectResult?.replay) {
+        // Why: the relay's replay buffer is the authoritative terminal state
+        // (last 100 KB of raw output). On SSH reattach the local xterm may
+        // already hold pre-disconnect content that overlaps with the buffer.
+        // Clearing before writing prevents duplication — same approach the
+        // snapshot path uses above. Focus-reporting reset prevents BEL on
+        // pane focus/blur from stale mode bits in the replayed data.
+        if (!connectResult.snapshot && !connectResult.coldRestore) {
+          replayIntoTerminal(pane, deps.replayingPanesRef, '\x1b[2J\x1b[3J\x1b[H')
+        }
         replayIntoTerminal(pane, deps.replayingPanesRef, connectResult.replay)
+        replayIntoTerminal(pane, deps.replayingPanesRef, POST_REPLAY_FOCUS_REPORTING_RESET)
       }
       if (connectResult?.sessionExpired) {
         toast.info('Previous SSH session expired.', {
@@ -541,6 +555,9 @@ export function connectPanePty(
       const pendingSessionId =
         restoredLeafSessionId ?? storeState.deferredSshSessionIdsByTabId[deps.tabId]
       const isDeferredTarget = storeState.deferredSshReconnectTargets.includes(connectionId)
+      console.warn(
+        `[pty-connection] SSH tab=${deps.tabId} connectionId=${connectionId} pendingSessionId=${pendingSessionId} isDeferredTarget=${isDeferredTarget}`
+      )
       if (pendingSessionId || isDeferredTarget) {
         void (async () => {
           // Why: ensure the SSH connection is established before attempting
@@ -559,6 +576,9 @@ export function connectPanePty(
             return
           }
           if (pendingSessionId) {
+            console.warn(
+              `[pty-connection] Attempting reattach for tab=${deps.tabId} sessionId=${pendingSessionId}`
+            )
             // Why: the saved remote PTY ID is single-use restore metadata.
             // Clear it before attach/fallback so remounts don't keep retrying
             // an expired session after a fresh shell has been created.
@@ -576,9 +596,19 @@ export function connectPanePty(
             })
             void Promise.resolve(reattachPromise)
               .then((result) => {
+                console.warn(
+                  `[pty-connection] Reattach result for tab=${deps.tabId}:`,
+                  result
+                    ? {
+                        sessionExpired: (result as Record<string, unknown>).sessionExpired,
+                        replay: !!(result as Record<string, unknown>).replay
+                      }
+                    : 'undefined'
+                )
                 handleReattachResult(result)
               })
-              .catch(() => {
+              .catch((err) => {
+                console.warn(`[pty-connection] Reattach FAILED for tab=${deps.tabId}:`, err)
                 if (disposed) {
                   return
                 }

@@ -29,10 +29,12 @@ const CONNECT_TIMEOUT_MS = 5_000
 function parseArgs(argv: string[]): {
   graceTimeMs: number
   connectMode: boolean
+  detached: boolean
   sockPath: string
 } {
   let graceTimeMs = DEFAULT_GRACE_MS
   let connectMode = false
+  let detached = false
   let sockPath = ''
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === '--grace-time' && argv[i + 1]) {
@@ -44,6 +46,8 @@ function parseArgs(argv: string[]): {
       i++
     } else if (argv[i] === '--connect') {
       connectMode = true
+    } else if (argv[i] === '--detached') {
+      detached = true
     } else if (argv[i] === '--sock-path' && argv[i + 1]) {
       sockPath = argv[i + 1]
       i++
@@ -52,7 +56,7 @@ function parseArgs(argv: string[]): {
   if (!sockPath) {
     sockPath = join(process.cwd(), SOCK_NAME)
   }
-  return { graceTimeMs, connectMode, sockPath }
+  return { graceTimeMs, connectMode, detached, sockPath }
 }
 
 // ── Connect mode ─────────────────────────────────────────────────────
@@ -82,6 +86,18 @@ function runConnectMode(sockPath: string): void {
     sock.pipe(process.stdout)
   })
 
+  // Why: when the SSH channel closes, stdout becomes a broken pipe.
+  // Node.js silently swallows EPIPE on process.stdout, so the bridge
+  // stays alive as a zombie — connected to the relay socket but unable
+  // to forward data. The relay keeps writing to this dead bridge,
+  // silently dropping pty.data frames until the next --connect replaces
+  // the socket. Exiting immediately on stdout error lets the relay
+  // detect the disconnect (socket close) and enter grace mode promptly.
+  process.stdout.on('error', () => {
+    sock.destroy()
+    process.exit(1)
+  })
+
   sock.on('error', (err) => {
     clearTimeout(connectTimeout)
     process.stderr.write(`[relay-connect] Socket error: ${err.message}\n`)
@@ -96,7 +112,7 @@ function runConnectMode(sockPath: string): void {
 // ── Normal mode ──────────────────────────────────────────────────────
 
 function main(): void {
-  const { graceTimeMs, connectMode, sockPath } = parseArgs(process.argv)
+  const { graceTimeMs, connectMode, detached, sockPath } = parseArgs(process.argv)
 
   if (connectMode) {
     runConnectMode(sockPath)
@@ -108,9 +124,13 @@ function main(): void {
   // would risk silent data corruption or zombie PTYs. We log for diagnostics
   // and then exit so the client can detect the disconnect and reconnect cleanly.
   process.on('uncaughtException', (err) => {
-    process.stderr.write(`[relay] Uncaught exception: ${err.message}\n`)
+    process.stderr.write(`[relay] Uncaught exception: ${err.message}\n${err.stack}\n`)
     cleanupSocket(sockPath)
     process.exit(1)
+  })
+
+  process.on('unhandledRejection', (reason) => {
+    process.stderr.write(`[relay] Unhandled rejection: ${reason}\n`)
   })
 
   // Why: stdoutAlive tracks whether process.stdout is still writable.
@@ -121,7 +141,11 @@ function main(): void {
   let stdoutAlive = true
   const dispatcher = new RelayDispatcher((data) => {
     if (stdoutAlive) {
-      process.stdout.write(data)
+      try {
+        process.stdout.write(data)
+      } catch {
+        stdoutAlive = false
+      }
     }
   })
 
@@ -132,6 +156,20 @@ function main(): void {
     if (rootPath) {
       context.registerRoot(rootPath)
     }
+  })
+
+  // Why: worktree creation needs to await root registration before sending
+  // addWorktree, which validates the target directory. While FIFO frame
+  // processing means a notification won't be reordered in steady state,
+  // the request variant makes the ordering guarantee explicit and closes
+  // failure windows during relay reconnect or fresh-host scenarios where
+  // roots may not yet be registered at all. See issue #911.
+  dispatcher.onRequest('session.registerRoot', async (params) => {
+    const rootPath = params.rootPath as string
+    if (rootPath) {
+      context.registerRoot(rootPath)
+    }
+    return { ok: true }
   })
 
   // Why: the client stores repo paths as-is from user input, but `~` is a
@@ -177,6 +215,7 @@ function main(): void {
       // so the old socket's close handler sees it's been replaced and
       // skips starting the grace timer.
       if (activeSocket) {
+        process.stderr.write('[relay] Replacing existing socket client with new connection\n')
         const replaced = activeSocket
         activeSocket = null
         replaced.destroy()
@@ -204,6 +243,18 @@ function main(): void {
         }
         ptyHandler.cancelGraceTimer()
         dispatcher.feed(chunk)
+      })
+
+      // Why: when the --connect bridge's SSH channel dies, stdin.pipe(sock)
+      // calls sock.end(), sending FIN to the relay. Without this handler
+      // the relay-side socket stays half-open — the relay keeps writing
+      // pty.data frames that the bridge can no longer forward, silently
+      // dropping output until the next --connect replaces the socket.
+      // Destroying on 'end' ensures the 'close' handler fires promptly.
+      sock.on('end', () => {
+        if (!sock.destroyed) {
+          sock.destroy()
+        }
       })
 
       sock.on('close', () => {
@@ -248,34 +299,53 @@ function main(): void {
 
   // ── stdin/stdout transport (initial connection) ─────────────────────
 
-  process.stdin.on('data', (chunk: Buffer) => {
-    ptyHandler.cancelGraceTimer()
-    dispatcher.feed(chunk)
-  })
-
-  process.stdin.on('end', () => {
-    // Why: stdout is piped to the SSH channel — once stdin closes the
-    // channel is gone and stdout writes would hit a dead pipe.  Mark it
-    // dead so the dispatcher's write callback becomes a no-op until a
-    // socket client reconnects and calls setWrite with a live target.
+  // Why: when the SSH channel closes, writing to stdout can emit an
+  // 'error' event (EPIPE/ERR_STREAM_DESTROYED). Without a handler,
+  // Node treats it as an uncaught exception and the process exits
+  // before the grace period starts.
+  process.stdout.on('error', () => {
     stdoutAlive = false
-    if (!activeSocket) {
-      dispatcher.invalidateClient()
-      startGrace()
-    }
-  })
-
-  process.stdin.on('error', () => {
-    stdoutAlive = false
-    if (!activeSocket) {
-      dispatcher.invalidateClient()
-      startGrace()
-    }
   })
 
   function startGrace(): void {
     ptyHandler.startGraceTimer(() => {
       shutdown()
+    })
+  }
+
+  if (detached) {
+    // Why: in detached mode the relay is backgrounded (nohup ... &) so
+    // stdin is /dev/null and stdout goes to a log file.  Listening on
+    // stdin would trigger an immediate EOF → grace → shutdown before any
+    // --connect client arrives.  Instead we mark stdout dead (no direct
+    // pipe), start the grace timer (socket connect will cancel it), and
+    // rely entirely on the Unix socket for client communication.
+    stdoutAlive = false
+    startGrace()
+  } else {
+    process.stdin.on('data', (chunk: Buffer) => {
+      ptyHandler.cancelGraceTimer()
+      dispatcher.feed(chunk)
+    })
+
+    process.stdin.on('end', () => {
+      // Why: stdout is piped to the SSH channel — once stdin closes the
+      // channel is gone and stdout writes would hit a dead pipe.  Mark it
+      // dead so the dispatcher's write callback becomes a no-op until a
+      // socket client reconnects and calls setWrite with a live target.
+      stdoutAlive = false
+      if (!activeSocket) {
+        dispatcher.invalidateClient()
+        startGrace()
+      }
+    })
+
+    process.stdin.on('error', () => {
+      stdoutAlive = false
+      if (!activeSocket) {
+        dispatcher.invalidateClient()
+        startGrace()
+      }
     })
   }
 
@@ -292,6 +362,18 @@ function main(): void {
 
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
+  // Why: when the SSH session drops, the OS sends SIGHUP to the relay's
+  // process group. Node's default SIGHUP behavior is to exit immediately,
+  // which kills all PTYs before the grace period can start. Ignoring
+  // SIGHUP lets the relay survive the SSH disconnect and enter its grace
+  // window — a reconnecting client can then bridge to the live relay via
+  // --connect and reattach to the still-running PTY sessions.
+  process.on('SIGHUP', () => {
+    process.stderr.write('[relay] Received SIGHUP (SSH session dropped), ignoring\n')
+  })
+  process.on('exit', (code) => {
+    process.stderr.write(`[relay] Process exiting with code ${code}\n`)
+  })
 
   // Signal readiness to the client — the client watches for this exact
   // string before sending framed data.
