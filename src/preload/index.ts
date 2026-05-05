@@ -21,6 +21,9 @@ import type {
   ListWorkItemsResult,
   MemorySnapshot,
   NotificationDispatchResult,
+  NotificationSoundDataResult,
+  NotificationSoundPathResult,
+  NotificationSoundResult,
   SearchResult
 } from '../shared/types'
 import type { RuntimeStatus, RuntimeSyncWindowGraph } from '../shared/runtime-types'
@@ -78,6 +81,29 @@ type NativeDropResolution =
   // could be resolved. The caller must suppress the drop entirely instead of
   // falling back to 'editor' — fail-closed behavior per design §7.1.
   | { target: 'rejected' }
+
+// Why: one shared HTMLAudioElement per sound file, restarted from t=0 on each
+// play, with an in-flight guard that drops new plays while the sound is still
+// ringing. This mirrors VS Code's AccessibilitySignalService and GNOME's
+// libcanberra: a burst of triggers self-dedupes by the sound's own duration
+// (no magic time constant), while distinct sounds are still allowed to overlap.
+// We also cache the decoded blob URL by path so we don't re-read 10MB from
+// disk and re-transfer it over IPC on every notification.
+let cachedNotificationSound: {
+  path: string
+  blobUrl: string
+  audio: HTMLAudioElement
+} | null = null
+let isNotificationSoundPlaying = false
+
+function disposeCachedNotificationSound(): void {
+  if (cachedNotificationSound) {
+    cachedNotificationSound.audio.pause()
+    cachedNotificationSound.audio.src = ''
+    URL.revokeObjectURL(cachedNotificationSound.blobUrl)
+    cachedNotificationSound = null
+  }
+}
 
 /**
  * Walk the composed event path to classify which UI surface the native OS drop
@@ -843,7 +869,66 @@ const api = {
   notifications: {
     dispatch: (args: Record<string, unknown>): Promise<NotificationDispatchResult> =>
       ipcRenderer.invoke('notifications:dispatch', args),
-    openSystemSettings: (): Promise<void> => ipcRenderer.invoke('notifications:openSystemSettings')
+    openSystemSettings: (): Promise<void> => ipcRenderer.invoke('notifications:openSystemSettings'),
+    playSound: async (options?: { force?: boolean }): Promise<NotificationSoundResult> => {
+      try {
+        // Why: drop replays while the sound is still ringing. The "test"
+        // button bypasses with force so the user always hears a confirmation.
+        if (!options?.force && isNotificationSoundPlaying) {
+          return { played: false, reason: 'deduped' }
+        }
+
+        const resolved = (await ipcRenderer.invoke(
+          'notifications:resolveSoundPath'
+        )) as NotificationSoundPathResult
+        if (!resolved.ok) {
+          if (cachedNotificationSound) {
+            disposeCachedNotificationSound()
+          }
+          return { played: false, reason: resolved.reason }
+        }
+
+        let entry = cachedNotificationSound
+        if (!entry || entry.path !== resolved.path) {
+          const sound = (await ipcRenderer.invoke(
+            'notifications:loadSound'
+          )) as NotificationSoundDataResult
+          if (!sound.ok) {
+            disposeCachedNotificationSound()
+            return { played: false, reason: sound.reason }
+          }
+          const arrayBuffer = new ArrayBuffer(sound.data.byteLength)
+          new Uint8Array(arrayBuffer).set(sound.data)
+          const blob = new Blob([arrayBuffer], { type: sound.mimeType })
+          disposeCachedNotificationSound()
+          const blobUrl = URL.createObjectURL(blob)
+          entry = { path: sound.path, blobUrl, audio: new Audio(blobUrl) }
+          cachedNotificationSound = entry
+        }
+
+        const audio = entry.audio
+        // Why: restart-from-zero on every play so a burst of triggers replays
+        // the sound from the start instead of stacking overlapping copies.
+        // Matches GNOME canberra and VS Code AccessibilitySignalService.
+        audio.currentTime = 0
+        isNotificationSoundPlaying = true
+        const release = (): void => {
+          isNotificationSoundPlaying = false
+        }
+        audio.addEventListener('ended', release, { once: true })
+        audio.addEventListener('error', release, { once: true })
+        try {
+          await audio.play()
+        } catch {
+          release()
+          return { played: false, reason: 'playback-failed' }
+        }
+        return { played: true }
+      } catch {
+        isNotificationSoundPlaying = false
+        return { played: false, reason: 'playback-failed' }
+      }
+    }
   },
 
   developerPermissions: {
@@ -868,6 +953,8 @@ const api = {
     pickAttachment: (): Promise<string | null> => ipcRenderer.invoke('shell:pickAttachment'),
 
     pickImage: (): Promise<string | null> => ipcRenderer.invoke('shell:pickImage'),
+
+    pickAudio: (): Promise<string | null> => ipcRenderer.invoke('shell:pickAudio'),
 
     pickDirectory: (args: { defaultPath?: string }): Promise<string | null> =>
       ipcRenderer.invoke('shell:pickDirectory', args),
