@@ -1,8 +1,12 @@
 import type {
   BrowserProfileListResult,
+  BrowserTabCurrentResult,
   BrowserScreenshotResult,
   BrowserSnapshotResult,
   BrowserTabListResult,
+  BrowserTabProfileCloneResult,
+  BrowserTabProfileShowResult,
+  BrowserTabShowResult,
   CliStatusResult,
   RuntimeRepoList,
   RuntimeRepoSearchRefs,
@@ -238,13 +242,21 @@ export function formatScreenshot(result: BrowserScreenshotResult): string {
 }
 
 export function formatTabList(result: BrowserTabListResult): string {
+  return formatTabListWithProfiles(result, false)
+}
+
+export function formatTabListWithProfiles(
+  result: BrowserTabListResult,
+  showProfile: boolean
+): string {
   if (result.tabs.length === 0) {
     return 'No browser tabs open.'
   }
   return result.tabs
     .map((t) => {
       const marker = t.active ? '* ' : '  '
-      return `${marker}[${t.index}] ${t.browserPageId}  ${t.title} — ${t.url}`
+      const profile = showProfile ? `  [${t.profileLabel ?? t.profileId ?? 'Unknown'}]` : ''
+      return `${marker}[${t.index}] ${t.browserPageId}  ${t.title} — ${t.url}${profile}`
     })
     .join('\n')
 }
@@ -260,4 +272,29 @@ export function formatBrowserProfileList(result: BrowserProfileListResult): stri
       return `${marker}${profile.id}  ${profile.label}  ${profile.scope}  source:${source}`
     })
     .join('\n')
+}
+
+export function formatTabShow(result: BrowserTabShowResult | BrowserTabCurrentResult): string {
+  const tab = result.tab
+  return [
+    `page: ${tab.browserPageId}`,
+    `title: ${tab.title}`,
+    `url: ${tab.url}`,
+    `active: ${tab.active}`,
+    `worktree: ${tab.worktreeId ?? 'unknown'}`,
+    `profile: ${tab.profileLabel ?? tab.profileId ?? 'unknown'}`
+  ].join('\n')
+}
+
+export function formatTabProfileShow(result: BrowserTabProfileShowResult): string {
+  return [
+    `page: ${result.browserPageId}`,
+    `worktree: ${result.worktreeId ?? 'unknown'}`,
+    `profileId: ${result.profileId ?? 'default'}`,
+    `profile: ${result.profileLabel ?? result.profileId ?? 'default'}`
+  ].join('\n')
+}
+
+export function formatTabProfileClone(result: BrowserTabProfileCloneResult): string {
+  return `Cloned ${result.sourceBrowserPageId} to ${result.browserPageId} (${result.profileLabel ?? result.profileId ?? 'default'})`
 }
