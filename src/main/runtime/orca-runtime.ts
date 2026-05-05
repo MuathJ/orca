@@ -2967,8 +2967,14 @@ export class OrcaRuntimeService {
     }
 
     const worktreeId = `${repo.id}::${created.path}`
+    const now = Date.now()
     const meta = this.store.setWorktreeMeta(worktreeId, {
-      lastActivityAt: Date.now(),
+      lastActivityAt: now,
+      // See createRemoteWorktree: createdAt grants the new worktree a grace
+      // window in Recent sort so ambient PTY bumps in OTHER worktrees can't
+      // push it down before the user has had a chance to notice it. Smart-sort
+      // uses max(lastActivityAt, createdAt + CREATE_GRACE_MS).
+      createdAt: now,
       ...(shouldSetDisplayName(requestedName, branchName, sanitizedName)
         ? { displayName: requestedName }
         : {}),

@@ -1104,6 +1104,54 @@ describe('OrcaRuntimeService', () => {
     expect(activateWorktree).toHaveBeenCalledWith('repo-1', expect.any(String), undefined)
   })
 
+  it('stamps createdAt alongside lastActivityAt so CLI-created worktrees get the Recent-sort grace window', async () => {
+    // Why: parity with createLocalWorktree / createRemoteWorktree. Without
+    // createdAt, ambient PTY bumps in OTHER worktrees during the few seconds
+    // after creation can push the new worktree below them in Recent sort.
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setNotifier({
+      worktreesChanged: vi.fn(),
+      reposChanged: vi.fn(),
+      activateWorktree: vi.fn(),
+      createTerminal: vi.fn(),
+      splitTerminal: vi.fn(),
+      renameTerminal: vi.fn(),
+      focusTerminal: vi.fn(),
+      closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
+      terminalFitOverrideChanged: vi.fn(),
+      terminalDriverChanged: vi.fn()
+    })
+    runtime.attachWindow(1)
+
+    computeWorktreePathMock.mockReturnValue('/tmp/workspaces/runtime-grace')
+    ensurePathWithinWorkspaceMock.mockReturnValue('/tmp/workspaces/runtime-grace')
+    vi.mocked(getEffectiveHooks).mockReturnValue({ scripts: {} })
+    vi.mocked(listWorktrees).mockResolvedValueOnce([
+      {
+        path: '/tmp/workspaces/runtime-grace',
+        head: 'def',
+        branch: 'runtime-grace',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+
+    const before = Date.now()
+    const result = await runtime.createManagedWorktree({
+      repoSelector: 'id:repo-1',
+      name: 'runtime-grace'
+    })
+    const after = Date.now()
+
+    expect(result.worktree.createdAt).toBeDefined()
+    expect(result.worktree.createdAt).toBeGreaterThanOrEqual(before)
+    expect(result.worktree.createdAt).toBeLessThanOrEqual(after)
+    // Both fields must be stamped from the same `now` so the grace-window
+    // math (max(lastActivityAt, createdAt + GRACE_MS)) is well-defined.
+    expect(result.worktree.createdAt).toBe(result.worktree.lastActivityAt)
+  })
+
   it('skips archive hooks for CLI worktree removal by default', async () => {
     const runtime = new OrcaRuntimeService(store)
     vi.mocked(getEffectiveHooks).mockReturnValue({

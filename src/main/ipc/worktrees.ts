@@ -41,6 +41,20 @@ import { removeWorktreeSymlinks } from './worktree-symlinks'
 import { track } from '../telemetry/client'
 import { workspaceSourceSchema, type WorkspaceSource } from '../../shared/telemetry-events'
 
+// Why: worktrees discovered on disk (not created via Orca's UI) have no
+// persisted WorktreeMeta, so mergeWorktree falls back to `lastActivityAt: 0`.
+// That makes them sort to the bottom of "Recent" even though the user just
+// added the repo / folder. Stamp discovery time the first time we see a
+// worktree so its very existence counts as a recency signal. Subsequent
+// list calls find the persisted meta and skip the stamp.
+function resolveWorktreeMetaWithDiscoveryStamp(store: Store, worktreeId: string): WorktreeMeta {
+  const existing = store.getWorktreeMeta(worktreeId)
+  if (existing) {
+    return existing
+  }
+  return store.setWorktreeMeta(worktreeId, { lastActivityAt: Date.now() })
+}
+
 export function registerWorktreeHandlers(
   mainWindow: BrowserWindow,
   store: Store,
@@ -86,7 +100,7 @@ export function registerWorktreeHandlers(
           }
           return gitWorktrees.map((gw) => {
             const worktreeId = `${repo.id}::${gw.path}`
-            const meta = store.getWorktreeMeta(worktreeId)
+            const meta = resolveWorktreeMetaWithDiscoveryStamp(store, worktreeId)
             return mergeWorktree(repo.id, gw, meta, repo.displayName)
           })
         } catch {
@@ -128,7 +142,7 @@ export function registerWorktreeHandlers(
     }
     return gitWorktrees.map((gw) => {
       const worktreeId = `${repo.id}::${gw.path}`
-      const meta = store.getWorktreeMeta(worktreeId)
+      const meta = resolveWorktreeMetaWithDiscoveryStamp(store, worktreeId)
       return mergeWorktree(repo.id, gw, meta, repo.displayName)
     })
   })
