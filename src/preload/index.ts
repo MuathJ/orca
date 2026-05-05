@@ -397,11 +397,19 @@ const api = {
     },
 
     onSerializeBufferRequest: (
-      callback: (data: { requestId: string; ptyId: string }) => void
+      callback: (data: {
+        requestId: string
+        ptyId: string
+        opts?: { scrollbackRows?: number; altScreenForcesZeroRows?: boolean }
+      }) => void
     ): (() => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        data: { requestId: string; ptyId: string }
+        data: {
+          requestId: string
+          ptyId: string
+          opts?: { scrollbackRows?: number; altScreenForcesZeroRows?: boolean }
+        }
       ) => callback(data)
       ipcRenderer.on('pty:serializeBuffer:request', listener)
       return () => ipcRenderer.removeListener('pty:serializeBuffer:request', listener)
@@ -409,10 +417,24 @@ const api = {
 
     sendSerializedBuffer: (
       requestId: string,
-      snapshot: { data: string; cols: number; rows: number } | null
+      snapshot: { data: string; cols: number; rows: number; lastTitle?: string } | null
     ): void => {
       ipcRenderer.send('pty:serializeBuffer:response', { requestId, snapshot })
     },
+
+    // Why: pre-signal handshake — renderer declares it will own the serializer
+    // for `paneKey` BEFORE issuing pty:spawn so the cooperation gate in main
+    // can suppress the daemon-snapshot seed. Returns a generation token that
+    // the renderer must echo on settle/clear so paneKey-reuse during teardown
+    // cannot defeat the pre-signal. See docs/mobile-prefer-renderer-scrollback.md.
+    declarePendingPaneSerializer: (paneKey: string): Promise<number> =>
+      ipcRenderer.invoke('pty:declarePendingPaneSerializer', { paneKey }),
+
+    settlePaneSerializer: (paneKey: string, gen: number): Promise<void> =>
+      ipcRenderer.invoke('pty:settlePaneSerializer', { paneKey, gen }),
+
+    clearPendingPaneSerializer: (paneKey: string, gen: number): Promise<void> =>
+      ipcRenderer.invoke('pty:clearPendingPaneSerializer', { paneKey, gen }),
 
     management: {
       listSessions: () => ipcRenderer.invoke('pty:management:listSessions'),
@@ -1724,6 +1746,22 @@ const api = {
       ) => callback(data)
       ipcRenderer.on('runtime:terminalFitOverrideChanged', listener)
       return () => ipcRenderer.removeListener('runtime:terminalFitOverrideChanged', listener)
+    },
+    onTerminalDriverChanged: (
+      callback: (event: {
+        ptyId: string
+        driver: { kind: 'idle' } | { kind: 'desktop' } | { kind: 'mobile'; clientId: string }
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: {
+          ptyId: string
+          driver: { kind: 'idle' } | { kind: 'desktop' } | { kind: 'mobile'; clientId: string }
+        }
+      ) => callback(data)
+      ipcRenderer.on('runtime:terminalDriverChanged', listener)
+      return () => ipcRenderer.removeListener('runtime:terminalDriverChanged', listener)
     }
   },
 
