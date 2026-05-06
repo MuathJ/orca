@@ -23,13 +23,10 @@ import { connect, type RpcClient } from './rpc-client'
 import { loadHosts } from './host-store'
 import type { ConnectionState, HostProfile } from './types'
 
-const IDLE_CLOSE_MS = 30_000
-
 type StoreEntry = {
   client: RpcClient
   state: ConnectionState
   refCount: number
-  idleTimer: ReturnType<typeof setTimeout> | null
   unsubState: () => void
 }
 
@@ -83,7 +80,6 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
   const closeEntry = useCallback((hostId: string) => {
     const entry = storeRef.current.get(hostId)
     if (!entry) return
-    if (entry.idleTimer) clearTimeout(entry.idleTimer)
     entry.unsubState()
     entry.client.close()
     storeRef.current.delete(hostId)
@@ -150,7 +146,6 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
         client,
         state: client.getState(),
         refCount: 0,
-        idleTimer: null,
         unsubState
       }
       storeRef.current.set(hostId, entry)
@@ -175,10 +170,6 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
       const existing = storeRef.current.get(hostId)
       if (existing) {
         existing.refCount += 1
-        if (existing.idleTimer) {
-          clearTimeout(existing.idleTimer)
-          existing.idleTimer = null
-        }
         return existing.client
       }
       // Trigger async open. The acquire-side will return null this tick and
@@ -197,36 +188,30 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
     for (const host of hosts) primedHostsRef.current.set(host.id, host)
   }, [])
 
-  const release = useCallback(
-    (hostId: string) => {
-      const entry = storeRef.current.get(hostId)
-      if (!entry) return
-      entry.refCount = Math.max(0, entry.refCount - 1)
-      if (entry.refCount > 0) return
-      if (entry.idleTimer) clearTimeout(entry.idleTimer)
-      entry.idleTimer = setTimeout(() => {
-        // Why: only close if still idle when the timer fires. A late acquire
-        // would have cleared the timer.
-        const cur = storeRef.current.get(hostId)
-        if (!cur || cur.refCount > 0) return
-        closeEntry(hostId)
-      }, IDLE_CLOSE_MS)
-    },
-    [closeEntry]
-  )
+  // Why: refcount dropping to 0 no longer triggers an idle-close. The
+  // app deliberately keeps live WebSockets open while the app itself is
+  // foregrounded — closing on transient navigation gaps was producing
+  // false 'disconnected' flashes when the user navigated home → host →
+  // back to home faster than React could re-acquire on the home side.
+  // Connections still close on: explicit user Disconnect, host removal,
+  // app backgrounding (OS-level socket suspension), and provider
+  // unmount (app shutdown).
+  const release = useCallback((hostId: string) => {
+    const entry = storeRef.current.get(hostId)
+    if (!entry) return
+    entry.refCount = Math.max(0, entry.refCount - 1)
+  }, [])
 
   const forceReconnect = useCallback(
     async (hostId: string) => {
       const entry = storeRef.current.get(hostId)
-      // Why: if the entry was previously closed (e.g. user tapped
-      // Disconnect), refCount is lost. Fall back to the number of active
-      // state listeners as a proxy for "screens currently watching this
-      // host," so the freshly-opened entry doesn't trip the idle-close
-      // timer immediately.
+      // Why: preserve refcount across the swap. If the user reaches
+      // forceReconnect via the Disconnect → Reconnect path, the entry
+      // was already closed and refCount=0; fall back to active listener
+      // count as a proxy for "screens still watching this host."
       const listenerCount = stateListenersRef.current.get(hostId)?.size ?? 0
       const savedRefCount = entry?.refCount ?? Math.max(1, listenerCount)
       if (entry) {
-        if (entry.idleTimer) clearTimeout(entry.idleTimer)
         entry.unsubState()
         entry.client.close()
         storeRef.current.delete(hostId)
@@ -278,13 +263,23 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Close all clients on provider unmount (app shutdown / hot reload).
+  // Close all clients on provider unmount (app shutdown).
+  // Why: deps must be empty so this cleanup ONLY runs on real unmount.
+  // Hot-reload re-evaluates this module, which makes closeEntry a new
+  // function identity. With [closeEntry] as deps, every Fast Refresh
+  // would tear down all open WebSockets, leaving screens holding closed
+  // clients and the user staring at a 'Reconnecting…' card. Reading
+  // storeRef.current and the locally-scoped closeEntry inside the
+  // cleanup is safe — the ref is stable across renders, and the
+  // function captured here will be the one defined in the same
+  // closure as this effect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const store = storeRef.current
     return () => {
       for (const [hostId] of store) closeEntry(hostId)
     }
-  }, [closeEntry])
+  }, [])
 
   const value = useMemo<ContextValue>(
     () => ({
