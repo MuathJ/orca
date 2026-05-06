@@ -226,10 +226,6 @@ export default function SessionScreen() {
       const seq = (subscribeSeqRef.current.get(handle) ?? 0) + 1
       subscribeSeqRef.current.set(handle, seq)
 
-      console.log(
-        `[mobile-fit] subscribeToTerminal handle=${handle} seq=${seq} viewport=${viewportRef.current ? `${viewportRef.current.cols}x${viewportRef.current.rows}` : 'none'} measured=${viewportMeasuredRef.current}`
-      )
-
       // Why: server handles auto-fit on subscribe — no terminal.focus call needed.
       // The viewport is embedded in the subscribe params so the server resizes
       // the PTY before serializing scrollback. This eliminates the focus→safeFit
@@ -245,9 +241,6 @@ export default function SessionScreen() {
           if (subscribeSeqRef.current.get(handle) !== seq) return
           const data = result as Record<string, unknown>
           if (data.type === 'scrollback') {
-            console.log(
-              `[mobile-fit] scrollback handle=${handle} cols=${data.cols} rows=${data.rows} displayMode=${data.displayMode} hasSerialized=${!!data.serialized} alreadyInit=${initializedHandlesRef.current.has(handle)}`
-            )
             if (initializedHandlesRef.current.has(handle)) return
             const cols = (data.cols as number) || 80
             const rows = (data.rows as number) || 24
@@ -292,9 +285,6 @@ export default function SessionScreen() {
           } else if (data.type === 'data') {
             getTerminalRef(handle)?.write(data.chunk as string)
           } else if (data.type === 'resized') {
-            console.log(
-              `[mobile-fit] resized handle=${handle} cols=${data.cols} rows=${data.rows} displayMode=${data.displayMode} reason=${(data as Record<string, unknown>).reason}`
-            )
             // Why: inline resize event — the server changed the PTY dimensions
             // (mode toggle or desktop restore). Reinitialize xterm at the new
             // dims with fresh scrollback. No resubscribe needed.
@@ -368,9 +358,6 @@ export default function SessionScreen() {
         })
         if (response.ok) {
           const result = (response as RpcSuccess).result as { terminals: Terminal[] }
-          console.log(
-            `[mobile-fit] fetchTerminals count=${result.terminals.length} allowEmpty=${allowEmptyLoaded} activeHandle=${activeHandleRef.current} lastKnown=${lastKnownTerminalCountRef.current}`
-          )
 
           if (result.terminals.length === 0 && !allowEmptyLoaded) {
             return
@@ -382,9 +369,6 @@ export default function SessionScreen() {
           // rapid interactions while still allowing genuine cleanup.
           if (result.terminals.length === 0 && lastKnownTerminalCountRef.current > 0) {
             lastKnownTerminalCountRef.current = 0
-            console.log(
-              `[mobile-fit] fetchTerminals SKIP first empty — will clear on next fetch if still empty`
-            )
             return
           }
 
@@ -641,9 +625,6 @@ export default function SessionScreen() {
   const switchTab = useCallback(
     (handle: string) => {
       const prev = activeHandleRef.current
-      console.log(
-        `[mobile-fit] switchTab prev=${prev} next=${handle} hasUnsub=${terminalUnsubsRef.current.has(handle)} hasRef=${!!terminalRefs.current.get(handle)}`
-      )
       activeHandleRef.current = handle
       setActiveHandle(handle)
       if (prev && prev !== handle) {
@@ -670,9 +651,6 @@ export default function SessionScreen() {
   const setTerminalWebViewRef = useCallback((handle: string, ref: TerminalWebViewHandle | null) => {
     if (ref) {
       terminalRefs.current.set(handle, ref)
-      console.log(
-        `[mobile-fit] setTerminalWebViewRef handle=${handle} isActive=${handle === activeHandleRef.current} webReady=${webReadyHandlesRef.current.has(handle)}`
-      )
     } else {
       terminalRefs.current.delete(handle)
     }
@@ -682,9 +660,6 @@ export default function SessionScreen() {
     (handle: string) => {
       const wasAlreadyReady = webReadyHandlesRef.current.has(handle)
       webReadyHandlesRef.current.add(handle)
-      console.log(
-        `[mobile-fit] handleTerminalWebReady handle=${handle} isActive=${handle === activeHandleRef.current} wasAlreadyReady=${wasAlreadyReady} wasInitialized=${initializedHandlesRef.current.has(handle)}`
-      )
       if (wasAlreadyReady && initializedHandlesRef.current.has(handle)) {
         // Why: the native WebView reloaded (Metro hot reload or Android
         // process churn). The old xterm buffer is gone, so force a fresh
