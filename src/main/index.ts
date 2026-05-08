@@ -16,6 +16,7 @@ import { closeAllWatchers } from './ipc/filesystem-watcher'
 import { registerCoreHandlers } from './ipc/register-core-handlers'
 import { registerMobileHandlers } from './ipc/mobile'
 import { initTelemetry, shutdownTelemetry, trackAppOpenedOnce } from './telemetry/client'
+import { initCohortClassifier } from './telemetry/cohort-classifier'
 import { resolveConsent } from './telemetry/consent'
 import { triggerStartupNotificationRegistration } from './ipc/notifications'
 import { OrcaRuntimeService } from './runtime/orca-runtime'
@@ -399,6 +400,13 @@ app.whenReady().then(async () => {
   // the Store reference, seeds common props, and resets per-session burst
   // caps. Actual transport initialization is still gated by both flags.
   initTelemetry(store)
+  // Why: cohort-classifier reads the repo count synchronously at every emit
+  // for cohort-extended events. The Store has been sync-loaded above, and
+  // this init runs before any IPC handler is registered and before any
+  // window loads — so the classifier is hydrated before any `track()` call,
+  // regardless of whether it originates from the renderer, an IPC handler,
+  // or `trackAppOpenedOnce` / `did-finish-load`.
+  initCohortClassifier(store)
   stats = new StatsCollector()
   claudeUsage = new ClaudeUsageStore(store)
   codexUsage = new CodexUsageStore(store)
