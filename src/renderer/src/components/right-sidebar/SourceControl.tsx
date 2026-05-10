@@ -67,6 +67,7 @@ import {
 import { getFileTypeIcon } from '@/lib/file-type-icons'
 import {
   buildGitStatusSourceControlTree,
+  buildSourceControlTree,
   collectSourceControlTreeFileEntries,
   flattenSourceControlTree,
   type SourceControlTreeNode
@@ -174,7 +175,16 @@ type PendingDiscardConfirmation =
   | { kind: 'entry'; entry: GitStatusEntry }
   | { kind: 'area'; area: DiscardAllArea; paths: readonly string[] }
 
-type SourceControlTreeDirectoryNode = Extract<SourceControlTreeNode, { type: 'directory' }>
+type GitStatusSourceControlTreeNode = SourceControlTreeNode<
+  GitStatusEntry,
+  (typeof SECTION_ORDER)[number]
+>
+type SourceControlTreeDirectoryNode = Extract<GitStatusSourceControlTreeNode, { type: 'directory' }>
+type BranchSourceControlTreeNode = SourceControlTreeNode<GitBranchChangeEntry, 'branch'>
+type BranchSourceControlTreeDirectoryNode = Extract<
+  BranchSourceControlTreeNode,
+  { type: 'directory' }
+>
 
 type SourceControlDirectoryActionPaths = {
   stagePaths: string[]
@@ -586,6 +596,15 @@ function SourceControlInner(): React.JSX.Element {
       untracked: flattenSourceControlTree(treeRootsByArea.untracked, collapsedTreeDirs)
     }),
     [collapsedTreeDirs, treeRootsByArea]
+  )
+
+  const branchTreeRoots = useMemo(
+    () => buildSourceControlTree('branch', filteredBranchEntries),
+    [filteredBranchEntries]
+  )
+  const visibleBranchTreeRows = useMemo(
+    () => flattenSourceControlTree(branchTreeRoots, collapsedTreeDirs),
+    [branchTreeRoots, collapsedTreeDirs]
   )
 
   const visibleSelectionEntries = useMemo(() => {
@@ -2404,17 +2423,42 @@ function SourceControlInner(): React.JSX.Element {
                 }
               />
               {!collapsedSections.has('branch') &&
-                filteredBranchEntries.map((entry) => (
-                  <BranchEntryRow
-                    key={`branch:${entry.path}`}
-                    entry={entry}
-                    currentWorktreeId={currentWorktreeId}
-                    worktreePath={worktreePath}
-                    onRevealInExplorer={revealInExplorer}
-                    onOpen={() => openCommittedDiff(entry)}
-                    commentCount={diffCommentCountByPath.get(entry.path) ?? 0}
-                  />
-                ))}
+                (sourceControlViewMode === 'tree'
+                  ? visibleBranchTreeRows.map((node) => {
+                      if (node.type === 'directory') {
+                        return (
+                          <SourceControlBranchTreeDirectoryRow
+                            key={node.key}
+                            node={node}
+                            isCollapsed={collapsedTreeDirs.has(node.key)}
+                            onToggle={() => toggleTreeDir(node.key)}
+                          />
+                        )
+                      }
+                      return (
+                        <BranchEntryRow
+                          key={node.key}
+                          entry={node.entry}
+                          currentWorktreeId={currentWorktreeId}
+                          worktreePath={worktreePath}
+                          depth={node.depth}
+                          onRevealInExplorer={revealInExplorer}
+                          onOpen={() => openCommittedDiff(node.entry)}
+                          commentCount={diffCommentCountByPath.get(node.entry.path) ?? 0}
+                        />
+                      )
+                    })
+                  : filteredBranchEntries.map((entry) => (
+                      <BranchEntryRow
+                        key={`branch:${entry.path}`}
+                        entry={entry}
+                        currentWorktreeId={currentWorktreeId}
+                        worktreePath={worktreePath}
+                        onRevealInExplorer={revealInExplorer}
+                        onOpen={() => openCommittedDiff(entry)}
+                        commentCount={diffCommentCountByPath.get(entry.path) ?? 0}
+                      />
+                    )))}
             </div>
           )}
         </div>
@@ -3238,6 +3282,43 @@ function SourceControlTreeDirectoryRow({
   )
 }
 
+function SourceControlBranchTreeDirectoryRow({
+  node,
+  isCollapsed,
+  onToggle
+}: {
+  node: BranchSourceControlTreeDirectoryNode
+  isCollapsed: boolean
+  onToggle: () => void
+}): React.JSX.Element {
+  return (
+    <div
+      className="group relative flex w-full items-center gap-1 pr-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+      style={{ paddingLeft: `${node.depth * 16 + 8}px` }}
+    >
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-1 text-left"
+        onClick={onToggle}
+        aria-expanded={!isCollapsed}
+      >
+        <ChevronDown
+          className={cn('size-3 shrink-0 transition-transform', isCollapsed && '-rotate-90')}
+        />
+        {isCollapsed ? (
+          <Folder className="size-3 shrink-0" />
+        ) : (
+          <FolderOpen className="size-3 shrink-0" />
+        )}
+        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+      </button>
+      <span className="w-4 shrink-0 text-center text-[10px] font-bold tabular-nums text-muted-foreground/80">
+        {node.fileCount}
+      </span>
+    </div>
+  )
+}
+
 const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   entryKey,
   entry,
@@ -3449,6 +3530,7 @@ function BranchEntryRow({
   entry,
   currentWorktreeId,
   worktreePath,
+  depth = 0,
   onRevealInExplorer,
   onOpen,
   commentCount
@@ -3456,6 +3538,7 @@ function BranchEntryRow({
   entry: GitBranchChangeEntry
   currentWorktreeId: string
   worktreePath: string
+  depth?: number
   onRevealInExplorer: (worktreeId: string, absolutePath: string) => void
   onOpen: () => void
   commentCount: number
@@ -3472,7 +3555,8 @@ function BranchEntryRow({
       onRevealInExplorer={onRevealInExplorer}
     >
       <div
-        className="group flex cursor-pointer items-center gap-1 pl-5 pr-3 py-1 transition-colors hover:bg-accent/40"
+        className="group flex cursor-pointer items-center gap-1 pr-3 py-1 transition-colors hover:bg-accent/40"
+        style={{ paddingLeft: `${depth * 16 + 20}px` }}
         draggable
         onDragStart={(e) => {
           const absolutePath = joinPath(worktreePath, entry.path)

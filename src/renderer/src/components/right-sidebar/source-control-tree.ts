@@ -4,7 +4,6 @@ import { splitPathSegments } from './path-tree'
 import { compareGitStatusEntries } from './source-control-status-sort'
 
 export type SourceControlTreeArea = Extract<GitStagingArea, 'unstaged' | 'staged' | 'untracked'>
-
 // Why: committed branch rows share the same path tree but do not carry
 // uncommitted status metadata, so the tree builder stays entry-shape generic.
 export type SourceControlTreeEntry = {
