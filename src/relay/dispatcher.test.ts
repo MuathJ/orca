@@ -1,9 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { RelayDispatcher } from './dispatcher'
 import {
+  FrameDecoder,
   encodeJsonRpcFrame,
   encodeKeepAliveFrame,
   MessageType,
+  parseJsonRpcMessage,
+  type JsonRpcMessage,
   type JsonRpcRequest,
   type JsonRpcNotification
 } from './protocol'
@@ -15,6 +18,19 @@ function decodeFirstFrame(buf: Buffer): { type: number; id: number; ack: number;
   const len = buf.readUInt32BE(9)
   const payload = buf.subarray(13, 13 + len)
   return { type, id, ack, payload }
+}
+
+function decodeMessages(buffers: Buffer[]): JsonRpcMessage[] {
+  const messages: JsonRpcMessage[] = []
+  const decoder = new FrameDecoder((frame) => {
+    if (frame.type === MessageType.Regular) {
+      messages.push(parseJsonRpcMessage(frame.payload))
+    }
+  })
+  for (const buffer of buffers) {
+    decoder.feed(buffer)
+  }
+  return messages
 }
 
 describe('RelayDispatcher', () => {
@@ -246,5 +262,34 @@ describe('RelayDispatcher', () => {
       return msg.id === 99
     })
     expect(responses).toHaveLength(0)
+  })
+
+  it('broadcasts notifications to every connected client', () => {
+    const secondaryWrites: Buffer[] = []
+    dispatcher.attachClient((data) => secondaryWrites.push(Buffer.from(data)))
+
+    dispatcher.notify('workspace.changed', { namespace: 'target-a' })
+
+    expect(decodeMessages(written)).toMatchObject([
+      { method: 'workspace.changed', params: { namespace: 'target-a' } }
+    ])
+    expect(decodeMessages(secondaryWrites)).toMatchObject([
+      { method: 'workspace.changed', params: { namespace: 'target-a' } }
+    ])
+  })
+
+  it('sends request responses only to the requesting client', async () => {
+    const secondaryWrites: Buffer[] = []
+    const secondaryId = dispatcher.attachClient((data) => secondaryWrites.push(Buffer.from(data)))
+    dispatcher.onRequest('secondary.ping', async () => ({ ok: true }))
+
+    dispatcher.feedClient(
+      secondaryId,
+      encodeJsonRpcFrame({ jsonrpc: '2.0', id: 7, method: 'secondary.ping' }, 1, 0)
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(decodeMessages(written)).toEqual([])
+    expect(decodeMessages(secondaryWrites)).toMatchObject([{ id: 7, result: { ok: true } }])
   })
 })

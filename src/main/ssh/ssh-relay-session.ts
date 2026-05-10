@@ -56,6 +56,7 @@ export class SshRelaySession {
     private store: Store,
     private portForwardManager: SshPortForwardManager,
     private runtime?: OrcaRuntimeService,
+    private relayInstanceId: string = targetId,
     private onDetectedPortsChanged?: (
       targetId: string,
       ports: DetectedPort[],
@@ -106,7 +107,7 @@ export class SshRelaySession {
         conn,
         undefined,
         graceTimeSeconds,
-        this.targetId
+        this.relayInstanceId
       )
 
       // Why: dispose() can fire during the await above (e.g. user clicks
@@ -194,7 +195,7 @@ export class SshRelaySession {
         conn,
         undefined,
         graceTimeSeconds,
-        this.targetId
+        this.relayInstanceId
       )
 
       if (abortController.signal.aborted || this.isDisposed()) {
@@ -361,6 +362,7 @@ export class SshRelaySession {
     registerSshGitProvider(this.targetId, gitProvider)
 
     this.wireUpPtyEvents(ptyProvider)
+    this.wireUpWorkspaceEvents(mux)
     return true
   }
 
@@ -434,6 +436,24 @@ export class SshRelaySession {
     win.webContents.send('ssh:detected-ports-changed', {
       targetId: this.targetId,
       ports: []
+    })
+  }
+
+  private wireUpWorkspaceEvents(mux: SshChannelMultiplexer): void {
+    mux.onNotification((method, params) => {
+      if (method !== 'workspace.changed') {
+        return
+      }
+      const win = this.getMainWindow()
+      if (!win || win.isDestroyed()) {
+        return
+      }
+      win.webContents.send('remoteWorkspace:changed', {
+        targetId: this.targetId,
+        snapshot: params.snapshot,
+        sourceClientId:
+          typeof params.sourceClientId === 'string' ? params.sourceClientId : undefined
+      })
     })
   }
 

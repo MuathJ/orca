@@ -191,8 +191,17 @@ export function RemoteStep({
   onConnectTarget
 }: RemoteStepProps): React.JSX.Element {
   const [browsing, setBrowsing] = useState(false)
+  const selectedTarget = selectedTargetId
+    ? sshTargets.find((target) => target.id === selectedTargetId)
+    : null
+  const selectedTargetConnected = selectedTarget?.state?.status === 'connected'
+  const canUseSelectedTarget = !!selectedTargetId && selectedTargetConnected
+  const targetConnectionHint =
+    selectedTargetId && !selectedTargetConnected
+      ? 'Connect this SSH target before browsing or adding a remote project.'
+      : null
 
-  if (browsing && selectedTargetId) {
+  if (browsing && canUseSelectedTarget) {
     return (
       <>
         <DialogHeader>
@@ -277,18 +286,21 @@ export function RemoteStep({
               size="sm"
               className="h-8 px-2 shrink-0"
               onClick={() => setBrowsing(true)}
-              disabled={!selectedTargetId || isAddingRemote}
+              disabled={!canUseSelectedTarget || isAddingRemote}
             >
               <FolderOpen className="size-3.5" />
             </Button>
           </div>
         </div>
 
+        {targetConnectionHint && (
+          <p className="text-[11px] text-muted-foreground">{targetConnectionHint}</p>
+        )}
         {remoteError && <p className="text-[11px] text-destructive">{remoteError}</p>}
 
         <Button
           onClick={onAdd}
-          disabled={!selectedTargetId || !remotePath.trim() || isAddingRemote}
+          disabled={!canUseSelectedTarget || !remotePath.trim() || isAddingRemote}
           className="w-full"
         >
           {isAddingRemote ? 'Adding...' : 'Add remote project'}

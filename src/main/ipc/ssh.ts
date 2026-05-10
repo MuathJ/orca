@@ -1,6 +1,7 @@
 /* oxlint-disable max-lines -- Why: co-locates SSH IPC handlers, port-forward
 broadcasting, and session lifecycle in one file to keep the data flow obvious. */
 import { ipcMain, type BrowserWindow } from 'electron'
+import { createHash } from 'crypto'
 import type { Store } from '../persistence'
 import { SshConnectionStore } from '../ssh/ssh-connection-store'
 import { SshConnectionManager, type SshConnectionCallbacks } from '../ssh/ssh-connection'
@@ -34,6 +35,21 @@ const activeSessions = new Map<string, SshRelaySession>()
 // leaks. This map holds the in-flight connect promise so the second call
 // awaits the first rather than racing.
 const connectInFlight = new Map<string, Promise<SshConnectionState>>()
+
+function getRelayInstanceId(target: SshTarget): string {
+  if (!target.remoteWorkspaceSyncEnabled) {
+    return target.id
+  }
+  // Why: synced workspaces must converge across devices whose local SSH target
+  // ids differ. Hash only stable connection coordinates for the opt-in path.
+  const stableKey = [
+    target.configHost || target.host,
+    target.host,
+    String(target.port),
+    target.username
+  ].join('\n')
+  return `synced-${createHash('sha256').update(stableKey).digest('hex').slice(0, 32)}`
+}
 
 // Why: ssh:testConnection calls connect() then disconnect(), which fires
 // state-change events to the renderer. This causes worktree cards to briefly
@@ -301,6 +317,7 @@ export function registerSshHandlers(
       store,
       portForwardManager!,
       runtime,
+      getRelayInstanceId(target),
       (tid, ports, _platform) => {
         broadcastDetectedPorts(getMainWindow, tid, ports)
       }

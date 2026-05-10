@@ -22,23 +22,27 @@ export type MethodHandler = (
 
 export type NotificationHandler = (params: Record<string, unknown>) => void
 
+type RelayClient = {
+  id: number
+  decoder: FrameDecoder
+  write: (data: Buffer) => void
+  nextOutgoingSeq: number
+  highestReceivedSeq: number
+  generation: number
+}
+
 export class RelayDispatcher {
-  private decoder: FrameDecoder
-  private write: (data: Buffer) => void
+  private readonly primaryClient: RelayClient
+  private readonly clients = new Map<number, RelayClient>()
   private requestHandlers = new Map<string, MethodHandler>()
   private notificationHandlers = new Map<string, NotificationHandler>()
-  private nextOutgoingSeq = 1
-  private highestReceivedSeq = 0
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null
   private disposed = false
-  // Why: incremented on every setWrite() call so async request handlers
-  // that started before a client swap can detect that their response
-  // would go to a different client and discard it instead of misrouting.
-  private generation = 0
+  private nextClientId = 1
 
   constructor(write: (data: Buffer) => void) {
-    this.write = write
-    this.decoder = new FrameDecoder((frame) => this.handleFrame(frame))
+    this.primaryClient = this.createClient(write)
+    this.clients.set(this.primaryClient.id, this.primaryClient)
     this.startKeepalive()
   }
 
@@ -54,18 +58,41 @@ export class RelayDispatcher {
   // up — causing the client's unacked-timeout checker to accumulate stale
   // timestamps that could eventually fire a false connection-dead signal.
   setWrite(write: (data: Buffer) => void): void {
-    this.write = write
-    this.nextOutgoingSeq = 1
-    this.highestReceivedSeq = 0
-    this.decoder.reset()
-    this.generation++
+    this.primaryClient.write = write
+    this.resetClient(this.primaryClient)
   }
 
   // Why: in-flight mutating requests must become stale when the active client
   // disconnects even if no replacement has connected yet. Otherwise a late
   // pty.spawn/fs.watch completion can create remote state nobody can own.
   invalidateClient(): void {
-    this.generation++
+    this.primaryClient.generation++
+  }
+
+  // Why: synced remote workspaces allow more than one Orca client to connect
+  // to the same relay. Each client needs independent framing state because
+  // JSON-RPC ids and frame sequence numbers are per SSH channel.
+  attachClient(write: (data: Buffer) => void): number {
+    const client = this.createClient(write)
+    this.clients.set(client.id, client)
+    return client.id
+  }
+
+  detachClient(clientId: number): void {
+    const client = this.clients.get(clientId)
+    if (!client || client === this.primaryClient) {
+      return
+    }
+    client.generation++
+    this.clients.delete(clientId)
+  }
+
+  feedClient(clientId: number, data: Buffer): void {
+    const client = this.clients.get(clientId)
+    if (!client) {
+      return
+    }
+    this.feedForClient(client, data)
   }
 
   onRequest(method: string, handler: MethodHandler): void {
@@ -77,11 +104,15 @@ export class RelayDispatcher {
   }
 
   feed(data: Buffer): void {
+    this.feedForClient(this.primaryClient, data)
+  }
+
+  private feedForClient(client: RelayClient, data: Buffer): void {
     if (this.disposed) {
       return
     }
     try {
-      this.decoder.feed(data)
+      client.decoder.feed(data)
     } catch (err) {
       process.stderr.write(
         `[relay] Protocol error: ${err instanceof Error ? err.message : String(err)}\n`
@@ -98,7 +129,9 @@ export class RelayDispatcher {
       method,
       ...(params !== undefined ? { params } : {})
     }
-    this.sendFrame(msg)
+    for (const client of this.clients.values()) {
+      this.sendFrame(client, msg)
+    }
   }
 
   dispose(): void {
@@ -112,9 +145,29 @@ export class RelayDispatcher {
     }
   }
 
-  private handleFrame(frame: DecodedFrame): void {
-    if (frame.id > this.highestReceivedSeq) {
-      this.highestReceivedSeq = frame.id
+  private createClient(write: (data: Buffer) => void): RelayClient {
+    const id = this.nextClientId++
+    const client: RelayClient = {
+      id,
+      decoder: new FrameDecoder((frame) => this.handleFrame(client, frame)),
+      write,
+      nextOutgoingSeq: 1,
+      highestReceivedSeq: 0,
+      generation: 0
+    }
+    return client
+  }
+
+  private resetClient(client: RelayClient): void {
+    client.nextOutgoingSeq = 1
+    client.highestReceivedSeq = 0
+    client.decoder.reset()
+    client.generation++
+  }
+
+  private handleFrame(client: RelayClient, frame: DecodedFrame): void {
+    if (frame.id > client.highestReceivedSeq) {
+      client.highestReceivedSeq = frame.id
     }
 
     if (frame.type === MessageType.KeepAlive) {
@@ -124,7 +177,7 @@ export class RelayDispatcher {
     if (frame.type === MessageType.Regular) {
       try {
         const msg = parseJsonRpcMessage(frame.payload)
-        this.handleMessage(msg)
+        this.handleMessage(client, msg)
       } catch (err) {
         process.stderr.write(
           `[relay] Parse error: ${err instanceof Error ? err.message : String(err)}\n`
@@ -133,46 +186,47 @@ export class RelayDispatcher {
     }
   }
 
-  private handleMessage(msg: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse): void {
+  private handleMessage(
+    client: RelayClient,
+    msg: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse
+  ): void {
     if ('id' in msg && 'method' in msg) {
-      void this.handleRequest(msg as JsonRpcRequest)
+      void this.handleRequest(client, msg as JsonRpcRequest)
     } else if ('method' in msg && !('id' in msg)) {
       this.handleNotification(msg as JsonRpcNotification)
     }
   }
 
-  private async handleRequest(req: JsonRpcRequest): Promise<void> {
+  private async handleRequest(client: RelayClient, req: JsonRpcRequest): Promise<void> {
     const handler = this.requestHandlers.get(req.method)
     if (!handler) {
-      this.sendResponse(req.id, undefined, {
+      this.sendResponse(client, req.id, undefined, {
         code: -32601,
         message: `Method not found: ${req.method}`
       })
       return
     }
 
-    // Why: capture generation before the async handler runs. If a new
-    // client connects (setWrite increments generation) while this handler
-    // is in flight, the response belongs to the old client's request ID
-    // space. Sending it would misroute — the new client may have issued
-    // its own request with the same JSON-RPC id.
-    const gen = this.generation
+    // Why: capture this client's generation before the async handler runs.
+    // If that client disconnects while the handler is in flight, the response
+    // belongs to a dead request-id space and mutating work may need cleanup.
+    const gen = client.generation
     const context: RequestContext = {
-      isStale: () => this.generation !== gen
+      isStale: () => client.generation !== gen || !this.clients.has(client.id)
     }
     try {
       const result = await handler(req.params ?? {}, context)
-      if (this.generation !== gen) {
+      if (context.isStale()) {
         return
       }
-      this.sendResponse(req.id, result)
+      this.sendResponse(client, req.id, result)
     } catch (err) {
-      if (this.generation !== gen) {
+      if (context.isStale()) {
         return
       }
       const message = err instanceof Error ? err.message : String(err)
       const code = (err as { code?: number }).code ?? -32000
-      this.sendResponse(req.id, undefined, { code, message })
+      this.sendResponse(client, req.id, undefined, { code, message })
     }
   }
 
@@ -184,6 +238,7 @@ export class RelayDispatcher {
   }
 
   private sendResponse(
+    client: RelayClient,
     id: number,
     result?: unknown,
     error?: { code: number; message: string; data?: unknown }
@@ -193,16 +248,19 @@ export class RelayDispatcher {
       id,
       ...(error ? { error } : { result: result ?? null })
     }
-    this.sendFrame(msg)
+    this.sendFrame(client, msg)
   }
 
-  private sendFrame(msg: JsonRpcRequest | JsonRpcResponse | JsonRpcNotification): void {
+  private sendFrame(
+    client: RelayClient,
+    msg: JsonRpcRequest | JsonRpcResponse | JsonRpcNotification
+  ): void {
     if (this.disposed) {
       return
     }
-    const seq = this.nextOutgoingSeq++
-    const frame = encodeJsonRpcFrame(msg, seq, this.highestReceivedSeq)
-    this.write(frame)
+    const seq = client.nextOutgoingSeq++
+    const frame = encodeJsonRpcFrame(msg, seq, client.highestReceivedSeq)
+    client.write(frame)
   }
 
   private startKeepalive(): void {
@@ -210,9 +268,11 @@ export class RelayDispatcher {
       if (this.disposed) {
         return
       }
-      const seq = this.nextOutgoingSeq++
-      const frame = encodeKeepAliveFrame(seq, this.highestReceivedSeq)
-      this.write(frame)
+      for (const client of this.clients.values()) {
+        const seq = client.nextOutgoingSeq++
+        const frame = encodeKeepAliveFrame(seq, client.highestReceivedSeq)
+        client.write(frame)
+      }
     }, KEEPALIVE_SEND_MS)
     // Why: without unref, the keepalive interval keeps the event loop alive
     // even when the relay should be winding down (e.g. after stdin ends and

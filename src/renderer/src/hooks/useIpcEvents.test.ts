@@ -1,7 +1,8 @@
 /* eslint-disable max-lines -- Why: this test file keeps the hook wiring mocks close to the assertions so IPC event behavior stays understandable and maintainable. */
 import type * as ReactModule from 'react'
+import type { WorkspaceSessionState } from '../../../shared/types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { resolveZoomTarget } from './useIpcEvents'
+import { mergeRemoteWorkspaceSession, resolveZoomTarget } from './useIpcEvents'
 
 function makeTarget(args: { hasXtermClass?: boolean; editorClosest?: boolean }): {
   classList: { contains: (token: string) => boolean }
@@ -55,6 +56,271 @@ describe('resolveZoomTarget', () => {
         activeElement: makeTarget({ hasXtermClass: true })
       })
     ).toBe('ui')
+  })
+})
+
+describe('mergeRemoteWorkspaceSession', () => {
+  it('clears stale target state when the relay snapshot has no worktrees', () => {
+    const remoteWorktreeId = 'repo-remote::remote-worktree'
+    const localWorktreeId = 'repo-local::local-worktree'
+    const current: WorkspaceSessionState = {
+      activeRepoId: 'repo-remote',
+      activeWorktreeId: remoteWorktreeId,
+      activeTabId: 'term-remote',
+      tabsByWorktree: {
+        [remoteWorktreeId]: [
+          {
+            id: 'term-remote',
+            ptyId: 'pty-remote',
+            worktreeId: remoteWorktreeId,
+            title: 'Remote',
+            customTitle: null,
+            color: null,
+            sortOrder: 0,
+            createdAt: 1
+          }
+        ],
+        [localWorktreeId]: [
+          {
+            id: 'term-local',
+            ptyId: 'pty-local',
+            worktreeId: localWorktreeId,
+            title: 'Local',
+            customTitle: null,
+            color: null,
+            sortOrder: 0,
+            createdAt: 1
+          }
+        ]
+      },
+      terminalLayoutsByTabId: {
+        'term-remote': { root: null, activeLeafId: null, expandedLeafId: null },
+        'term-local': { root: null, activeLeafId: null, expandedLeafId: null }
+      },
+      activeWorktreeIdsOnShutdown: [remoteWorktreeId, localWorktreeId],
+      openFilesByWorktree: {
+        [remoteWorktreeId]: [
+          {
+            filePath: 'remote.ts',
+            relativePath: 'remote.ts',
+            worktreeId: remoteWorktreeId,
+            language: 'typescript'
+          }
+        ],
+        [localWorktreeId]: [
+          {
+            filePath: 'local.ts',
+            relativePath: 'local.ts',
+            worktreeId: localWorktreeId,
+            language: 'typescript'
+          }
+        ]
+      },
+      activeFileIdByWorktree: {
+        [remoteWorktreeId]: 'remote.ts',
+        [localWorktreeId]: 'local.ts'
+      },
+      browserTabsByWorktree: {
+        [remoteWorktreeId]: [
+          {
+            id: 'browser-remote',
+            worktreeId: remoteWorktreeId,
+            url: 'http://remote.test',
+            title: 'Remote',
+            loading: false,
+            faviconUrl: null,
+            canGoBack: false,
+            canGoForward: false,
+            loadError: null,
+            createdAt: 1
+          }
+        ],
+        [localWorktreeId]: [
+          {
+            id: 'browser-local',
+            worktreeId: localWorktreeId,
+            url: 'http://local.test',
+            title: 'Local',
+            loading: false,
+            faviconUrl: null,
+            canGoBack: false,
+            canGoForward: false,
+            loadError: null,
+            createdAt: 1
+          }
+        ]
+      },
+      browserPagesByWorkspace: {
+        'browser-remote': [
+          {
+            id: 'page-remote',
+            workspaceId: 'browser-remote',
+            worktreeId: remoteWorktreeId,
+            url: 'http://remote.test',
+            title: 'Remote',
+            loading: false,
+            faviconUrl: null,
+            canGoBack: false,
+            canGoForward: false,
+            loadError: null,
+            createdAt: 1
+          }
+        ],
+        'browser-local': [
+          {
+            id: 'page-local',
+            workspaceId: 'browser-local',
+            worktreeId: localWorktreeId,
+            url: 'http://local.test',
+            title: 'Local',
+            loading: false,
+            faviconUrl: null,
+            canGoBack: false,
+            canGoForward: false,
+            loadError: null,
+            createdAt: 1
+          }
+        ]
+      },
+      activeBrowserTabIdByWorktree: {
+        [remoteWorktreeId]: 'browser-remote',
+        [localWorktreeId]: 'browser-local'
+      },
+      activeTabTypeByWorktree: {
+        [remoteWorktreeId]: 'browser',
+        [localWorktreeId]: 'terminal'
+      },
+      activeTabIdByWorktree: {
+        [remoteWorktreeId]: 'term-remote',
+        [localWorktreeId]: 'term-local'
+      },
+      unifiedTabs: {
+        [remoteWorktreeId]: [
+          {
+            id: 'unified-remote',
+            entityId: 'term-remote',
+            groupId: 'group-remote',
+            worktreeId: remoteWorktreeId,
+            contentType: 'terminal',
+            label: 'Remote',
+            customLabel: null,
+            color: null,
+            sortOrder: 0,
+            createdAt: 1
+          }
+        ],
+        [localWorktreeId]: [
+          {
+            id: 'unified-local',
+            entityId: 'term-local',
+            groupId: 'group-local',
+            worktreeId: localWorktreeId,
+            contentType: 'terminal',
+            label: 'Local',
+            customLabel: null,
+            color: null,
+            sortOrder: 0,
+            createdAt: 1
+          }
+        ]
+      },
+      tabGroups: {
+        [remoteWorktreeId]: [
+          {
+            id: 'group-remote',
+            worktreeId: remoteWorktreeId,
+            activeTabId: 'unified-remote',
+            tabOrder: ['unified-remote']
+          }
+        ],
+        [localWorktreeId]: [
+          {
+            id: 'group-local',
+            worktreeId: localWorktreeId,
+            activeTabId: 'unified-local',
+            tabOrder: ['unified-local']
+          }
+        ]
+      },
+      tabGroupLayouts: {
+        [remoteWorktreeId]: { type: 'leaf', groupId: 'group-remote' },
+        [localWorktreeId]: { type: 'leaf', groupId: 'group-local' }
+      },
+      activeGroupIdByWorktree: {
+        [remoteWorktreeId]: 'group-remote',
+        [localWorktreeId]: 'group-local'
+      },
+      activeConnectionIdsAtShutdown: ['target-1'],
+      remoteSessionIdsByTabId: {
+        'term-remote': 'pty-remote',
+        'term-local': 'pty-local'
+      },
+      lastVisitedAtByWorktreeId: {
+        [remoteWorktreeId]: 1,
+        [localWorktreeId]: 2
+      }
+    }
+    const remote: WorkspaceSessionState = {
+      activeRepoId: null,
+      activeWorktreeId: null,
+      activeTabId: null,
+      tabsByWorktree: {},
+      terminalLayoutsByTabId: {},
+      activeConnectionIdsAtShutdown: ['target-1']
+    }
+
+    const merged = mergeRemoteWorkspaceSession(current, remote, {
+      repoIds: new Set(['repo-remote']),
+      worktreeIds: new Set([remoteWorktreeId])
+    })
+
+    expect(merged.activeRepoId).toBeNull()
+    expect(merged.activeWorktreeId).toBeNull()
+    expect(merged.activeTabId).toBeNull()
+    expect(merged.tabsByWorktree).toEqual({
+      [localWorktreeId]: current.tabsByWorktree[localWorktreeId]
+    })
+    expect(merged.terminalLayoutsByTabId).toEqual({
+      'term-local': current.terminalLayoutsByTabId['term-local']
+    })
+    expect(merged.activeWorktreeIdsOnShutdown).toEqual([localWorktreeId])
+    expect(merged.openFilesByWorktree).toEqual({
+      [localWorktreeId]: current.openFilesByWorktree?.[localWorktreeId]
+    })
+    expect(merged.activeFileIdByWorktree).toEqual({
+      [localWorktreeId]: current.activeFileIdByWorktree?.[localWorktreeId]
+    })
+    expect(merged.browserTabsByWorktree).toEqual({
+      [localWorktreeId]: current.browserTabsByWorktree?.[localWorktreeId]
+    })
+    expect(merged.browserPagesByWorkspace).toEqual({
+      'browser-local': current.browserPagesByWorkspace?.['browser-local']
+    })
+    expect(merged.activeBrowserTabIdByWorktree).toEqual({
+      [localWorktreeId]: current.activeBrowserTabIdByWorktree?.[localWorktreeId]
+    })
+    expect(merged.activeTabTypeByWorktree).toEqual({
+      [localWorktreeId]: current.activeTabTypeByWorktree?.[localWorktreeId]
+    })
+    expect(merged.activeTabIdByWorktree).toEqual({
+      [localWorktreeId]: current.activeTabIdByWorktree?.[localWorktreeId]
+    })
+    expect(merged.unifiedTabs).toEqual({
+      [localWorktreeId]: current.unifiedTabs?.[localWorktreeId]
+    })
+    expect(merged.tabGroups).toEqual({ [localWorktreeId]: current.tabGroups?.[localWorktreeId] })
+    expect(merged.tabGroupLayouts).toEqual({
+      [localWorktreeId]: current.tabGroupLayouts?.[localWorktreeId]
+    })
+    expect(merged.activeGroupIdByWorktree).toEqual({
+      [localWorktreeId]: current.activeGroupIdByWorktree?.[localWorktreeId]
+    })
+    expect(merged.remoteSessionIdsByTabId).toEqual({
+      'term-local': current.remoteSessionIdsByTabId?.['term-local']
+    })
+    expect(merged.lastVisitedAtByWorktreeId).toEqual({
+      [localWorktreeId]: current.lastVisitedAtByWorktreeId?.[localWorktreeId]
+    })
   })
 })
 

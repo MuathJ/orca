@@ -22,6 +22,7 @@ import { FsHandler } from './fs-handler'
 import { GitHandler } from './git-handler'
 import { PreflightHandler } from './preflight-handler'
 import { PortScanHandler } from './port-scan-handler'
+import { WorkspaceSessionHandler } from './workspace-session-handler'
 
 const DEFAULT_GRACE_MS = 5 * 60 * 1000
 const SOCK_NAME = 'relay.sock'
@@ -201,52 +202,33 @@ function main(): void {
   const _portScanHandler = new PortScanHandler(dispatcher)
   void _portScanHandler
 
+  const _workspaceSessionHandler = new WorkspaceSessionHandler(dispatcher)
+  void _workspaceSessionHandler
+
   // ── Socket server for reconnection ──────────────────────────────────
   // Why: the relay's original stdin/stdout is tied to the SSH exec channel.
   // When the app restarts that channel is gone.  A Unix domain socket lets
   // a new --connect bridge pipe data to the same dispatcher that owns the
   // live PTYs — no serialization or process handoff needed.
 
-  let activeSocket: Socket | null = null
+  const socketClients = new Map<Socket, number>()
   let socketServer: Server | null = null
 
   function startSocketServer(): Server {
     cleanupSocket(sockPath)
     const server = createServer((sock) => {
-      // Why: only one client at a time.  If a second reconnect arrives
-      // (e.g. user restarts again quickly), close the stale bridge so the
-      // new one takes over cleanly.  We null activeSocket BEFORE destroying
-      // so the old socket's close handler sees it's been replaced and
-      // skips starting the grace timer.
-      if (activeSocket) {
-        process.stderr.write('[relay] Replacing existing socket client with new connection\n')
-        const replaced = activeSocket
-        activeSocket = null
-        replaced.destroy()
-      }
-      activeSocket = sock
-
-      // Why: stdin's data listener is still registered from the initial
-      // connection. If the old SSH channel hasn't fully closed yet (TCP
-      // FIN delayed), buffered stdin data would interleave with the new
-      // socket client's frames, corrupting the frame decoder.
-      process.stdin.pause()
-      process.stdin.removeAllListeners('data')
-
-      ptyHandler.cancelGraceTimer()
-
-      dispatcher.setWrite((data) => {
+      const clientId = dispatcher.attachClient((data) => {
         if (!sock.destroyed) {
           sock.write(data)
         }
       })
+      socketClients.set(sock, clientId)
+
+      ptyHandler.cancelGraceTimer()
 
       sock.on('data', (chunk: Buffer) => {
-        if (activeSocket !== sock) {
-          return
-        }
         ptyHandler.cancelGraceTimer()
-        dispatcher.feed(chunk)
+        dispatcher.feedClient(clientId, chunk)
       })
 
       // Why: when the --connect bridge's SSH channel dies, stdin.pipe(sock)
@@ -262,21 +244,16 @@ function main(): void {
       })
 
       sock.on('close', () => {
-        // Why: only start the grace timer if THIS socket is still the
-        // active one.  If it was replaced by a newer connection (see
-        // above), activeSocket was already nulled and reassigned — starting
-        // the grace timer here would incorrectly begin shutdown while a
-        // live client is connected.
-        if (activeSocket === sock) {
-          activeSocket = null
-          dispatcher.invalidateClient()
+        socketClients.delete(sock)
+        dispatcher.detachClient(clientId)
+        if (!stdoutAlive && socketClients.size === 0) {
           startGrace()
         }
       })
 
       sock.on('error', () => {
         // Why: Node emits 'error' then 'close'. The close handler owns
-        // activeSocket cleanup and grace startup; clearing activeSocket here
+        // client cleanup and grace startup; removing socketClients here
         // would make close skip the grace timer and leave the relay alive
         // indefinitely with no client.
       })
@@ -309,6 +286,7 @@ function main(): void {
   // before the grace period starts.
   process.stdout.on('error', () => {
     stdoutAlive = false
+    dispatcher.invalidateClient()
   })
 
   function startGrace(): void {
@@ -335,19 +313,19 @@ function main(): void {
     process.stdin.on('end', () => {
       // Why: stdout is piped to the SSH channel — once stdin closes the
       // channel is gone and stdout writes would hit a dead pipe.  Mark it
-      // dead so the dispatcher's write callback becomes a no-op until a
-      // socket client reconnects and calls setWrite with a live target.
+      // dead so the primary client's write callback becomes a no-op while
+      // socket clients, if any, keep their own live transports.
       stdoutAlive = false
-      if (!activeSocket) {
-        dispatcher.invalidateClient()
+      dispatcher.invalidateClient()
+      if (socketClients.size === 0) {
         startGrace()
       }
     })
 
     process.stdin.on('error', () => {
       stdoutAlive = false
-      if (!activeSocket) {
-        dispatcher.invalidateClient()
+      dispatcher.invalidateClient()
+      if (socketClients.size === 0) {
         startGrace()
       }
     })

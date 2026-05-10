@@ -17,6 +17,9 @@ export type SshTarget = {
   /** Grace period in seconds before relay shuts down after disconnect.
    *  Default: 300 (5 minutes). */
   relayGracePeriodSeconds?: number
+  /** Opt in to remote-host-owned workspace/session state for this SSH target.
+   *  Classic SSH remains local-session-backed when this is false/absent. */
+  remoteWorkspaceSyncEnabled?: boolean
   /** Set to true after a successful connection that triggered a credential
    *  prompt (passphrase or password). Persisted so startup reconnect can
    *  partition targets into eager (no passphrase) vs deferred (passphrase)

@@ -48,6 +48,7 @@ import {
 import { useGlobalFileDrop } from './hooks/useGlobalFileDrop'
 import { registerUpdaterBeforeUnloadBypass } from './lib/updater-beforeunload'
 import { buildWorkspaceSessionPayload } from './lib/workspace-session'
+import { isRemoteWorkspaceHydrating } from './lib/remote-workspace-hydration-guard'
 import { applyDocumentTheme } from './lib/document-theme'
 import { isEditableTarget } from './lib/editable-target'
 import {
@@ -416,12 +417,17 @@ function App(): React.JSX.Element {
       if (!state.workspaceSessionReady) {
         return
       }
+      const shouldSyncRemoteWorkspace = !isRemoteWorkspaceHydrating()
       if (timer) {
         window.clearTimeout(timer)
       }
       timer = window.setTimeout(() => {
         timer = null
-        void window.api.session.set(buildWorkspaceSessionPayload(state))
+        const payload = buildWorkspaceSessionPayload(state)
+        void window.api.session.set(payload)
+        if (shouldSyncRemoteWorkspace) {
+          void window.api.remoteWorkspace?.setForConnectedTargets({ session: payload })
+        }
       }, 150)
     })
     return () => {

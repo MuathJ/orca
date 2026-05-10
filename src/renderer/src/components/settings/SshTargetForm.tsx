@@ -13,6 +13,7 @@ export type EditingTarget = {
   proxyCommand: string
   jumpHost: string
   relayGracePeriodSeconds: string
+  remoteWorkspaceSyncEnabled: boolean
 }
 
 export const EMPTY_FORM: EditingTarget = {
@@ -24,7 +25,8 @@ export const EMPTY_FORM: EditingTarget = {
   identityFile: '',
   proxyCommand: '',
   jumpHost: '',
-  relayGracePeriodSeconds: '300'
+  relayGracePeriodSeconds: '300',
+  remoteWorkspaceSyncEnabled: false
 }
 
 type SshTargetFormProps = {
@@ -139,6 +141,35 @@ export function SshTargetForm({
           <p className="text-[11px] text-muted-foreground">
             How long the relay keeps terminals alive after disconnect. Default: 300 (5 minutes).
           </p>
+        </div>
+        <div className="col-span-2 flex items-start gap-3 rounded-md border border-border/50 bg-muted/20 p-3">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.remoteWorkspaceSyncEnabled}
+            onClick={() =>
+              onFormChange((f) => ({
+                ...f,
+                remoteWorkspaceSyncEnabled: !f.remoteWorkspaceSyncEnabled
+              }))
+            }
+            className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
+              form.remoteWorkspaceSyncEnabled ? 'bg-foreground' : 'bg-muted-foreground/30'
+            }`}
+          >
+            <span
+              className={`pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform ${
+                form.remoteWorkspaceSyncEnabled ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+          <span className="space-y-1">
+            <span className="block text-sm font-medium">Synced remote workspace</span>
+            <span className="block text-[11px] text-muted-foreground">
+              Store SSH workspace tabs and terminal bindings on the remote relay so other Orca
+              clients connecting to this target can restore the same view.
+            </span>
+          </span>
         </div>
       </div>
 

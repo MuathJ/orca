@@ -108,6 +108,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       port,
       username: form.username.trim(),
       relayGracePeriodSeconds: graceSeconds,
+      remoteWorkspaceSyncEnabled: form.remoteWorkspaceSyncEnabled,
       ...(form.identityFile.trim() ? { identityFile: form.identityFile.trim() } : {}),
       ...(form.proxyCommand.trim() ? { proxyCommand: form.proxyCommand.trim() } : {}),
       ...(form.jumpHost.trim() ? { jumpHost: form.jumpHost.trim() } : {})
@@ -158,7 +159,8 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       identityFile: target.identityFile ?? '',
       proxyCommand: target.proxyCommand ?? '',
       jumpHost: target.jumpHost ?? '',
-      relayGracePeriodSeconds: String(target.relayGracePeriodSeconds ?? 300)
+      relayGracePeriodSeconds: String(target.relayGracePeriodSeconds ?? 300),
+      remoteWorkspaceSyncEnabled: target.remoteWorkspaceSyncEnabled === true
     })
     setShowForm(true)
   }

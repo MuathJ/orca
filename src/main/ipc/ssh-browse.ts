@@ -27,7 +27,7 @@ export function registerSshBrowseHandler(
       }
       const conn = mgr.getConnection(args.targetId)
       if (!conn) {
-        throw new Error(`SSH connection "${args.targetId}" not found`)
+        throw new Error(`SSH target "${args.targetId}" is not connected on this device`)
       }
 
       // Why: using printf with a delimiter instead of ls avoids issues with

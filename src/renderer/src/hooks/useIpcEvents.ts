@@ -8,7 +8,8 @@ import { SPLIT_TERMINAL_PANE_EVENT, CLOSE_TERMINAL_PANE_EVENT } from '@/constant
 import type { SplitTerminalPaneDetail, CloseTerminalPaneDetail } from '@/constants/terminal'
 import { getVisibleWorktreeIds } from '@/components/sidebar/visible-worktrees'
 import { nextEditorFontZoomLevel, computeEditorFontSize } from '@/lib/editor-font-zoom'
-import type { UpdateStatus } from '../../../shared/types'
+import type { UpdateStatus, WorkspaceSessionState } from '../../../shared/types'
+import type { RemoteWorkspaceSnapshot } from '../../../shared/remote-workspace-types'
 import type { RateLimitState } from '../../../shared/rate-limit-types'
 import type { SshConnectionState } from '../../../shared/ssh-types'
 import { zoomLevelToPercent, ZOOM_MIN, ZOOM_MAX } from '@/components/settings/SettingsConstants'
@@ -25,10 +26,371 @@ import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { setFitOverride, hydrateOverrides } from '@/lib/pane-manager/mobile-fit-overrides'
 import { setDriverForPty } from '@/lib/pane-manager/mobile-driver-state'
 import { destroyPersistentWebview } from '@/components/browser-pane/webview-registry'
+import { buildWorkspaceSessionPayload } from '@/lib/workspace-session'
+import { runDuringRemoteWorkspaceHydration } from '@/lib/remote-workspace-hydration-guard'
 
 export { resolveZoomTarget } from './resolve-zoom-target'
 
 const ZOOM_STEP = 0.5
+
+function getWorktreePathFromId(worktreeId: string): string | null {
+  const separatorIdx = worktreeId.indexOf('::')
+  return separatorIdx >= 0 ? worktreeId.slice(separatorIdx + 2) : null
+}
+
+function remapWorktreeRecord<T>(
+  input: Record<string, T> | undefined,
+  mapWorktreeId: (worktreeId: string) => string | null
+): Record<string, T> | undefined {
+  if (!input) {
+    return undefined
+  }
+  const entries = Object.entries(input)
+    .map(([worktreeId, value]) => {
+      const mapped = mapWorktreeId(worktreeId)
+      return mapped ? ([mapped, value] as const) : null
+    })
+    .filter((entry): entry is readonly [string, T] => entry !== null)
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
+function translateRemoteWorkspaceSessionIds(
+  targetId: string,
+  session: WorkspaceSessionState
+): WorkspaceSessionState {
+  const store = useAppStore.getState()
+  const remoteRepos = store.repos.filter((repo) => repo.connectionId === targetId)
+  const validLocalRepoIds = new Set(remoteRepos.map((repo) => repo.id))
+  const worktreeIdByPath = new Map<string, string>()
+  for (const repo of remoteRepos) {
+    for (const worktree of store.worktreesByRepo[repo.id] ?? []) {
+      worktreeIdByPath.set(worktree.path, worktree.id)
+    }
+  }
+
+  const mapWorktreeId = (worktreeId: string): string | null => {
+    const repoId = worktreeId.split('::')[0]
+    if (validLocalRepoIds.has(repoId)) {
+      return worktreeId
+    }
+    const path = getWorktreePathFromId(worktreeId)
+    return path ? (worktreeIdByPath.get(path) ?? null) : null
+  }
+
+  const mapWorktreeIds = (ids: string[] | undefined): string[] | undefined => {
+    const mapped = (ids ?? []).map(mapWorktreeId).filter((id): id is string => id !== null)
+    return mapped.length > 0 ? mapped : undefined
+  }
+
+  const tabsByWorktree = remapWorktreeRecord(session.tabsByWorktree, mapWorktreeId) as
+    | WorkspaceSessionState['tabsByWorktree']
+    | undefined
+  const normalizedTabsByWorktree = Object.fromEntries(
+    Object.entries(tabsByWorktree ?? {}).map(([worktreeId, tabs]) => [
+      worktreeId,
+      tabs.map((tab) => ({ ...tab, worktreeId }))
+    ])
+  )
+  const browserTabsByWorktree = remapWorktreeRecord(
+    session.browserTabsByWorktree,
+    mapWorktreeId
+  ) as WorkspaceSessionState['browserTabsByWorktree']
+  const normalizedBrowserTabsByWorktree = browserTabsByWorktree
+    ? Object.fromEntries(
+        Object.entries(browserTabsByWorktree).map(([worktreeId, tabs]) => [
+          worktreeId,
+          tabs.map((tab) => ({ ...tab, worktreeId }))
+        ])
+      )
+    : undefined
+  const unifiedTabs = remapWorktreeRecord(session.unifiedTabs, mapWorktreeId) as
+    | WorkspaceSessionState['unifiedTabs']
+    | undefined
+  const normalizedUnifiedTabs = unifiedTabs
+    ? Object.fromEntries(
+        Object.entries(unifiedTabs).map(([worktreeId, tabs]) => [
+          worktreeId,
+          tabs.map((tab) => ({ ...tab, worktreeId }))
+        ])
+      )
+    : undefined
+  const tabGroups = remapWorktreeRecord(session.tabGroups, mapWorktreeId) as
+    | WorkspaceSessionState['tabGroups']
+    | undefined
+  const normalizedTabGroups = tabGroups
+    ? Object.fromEntries(
+        Object.entries(tabGroups).map(([worktreeId, groups]) => [
+          worktreeId,
+          groups.map((group) => ({ ...group, worktreeId }))
+        ])
+      )
+    : undefined
+  const activeWorktreeId = session.activeWorktreeId ? mapWorktreeId(session.activeWorktreeId) : null
+  const activeRepoId = activeWorktreeId
+    ? activeWorktreeId.split('::')[0]
+    : session.activeRepoId && validLocalRepoIds.has(session.activeRepoId)
+      ? session.activeRepoId
+      : null
+  const openFilesByWorktree = remapWorktreeRecord(
+    session.openFilesByWorktree,
+    mapWorktreeId
+  ) as WorkspaceSessionState['openFilesByWorktree']
+  const normalizedOpenFilesByWorktree = openFilesByWorktree
+    ? Object.fromEntries(
+        Object.entries(openFilesByWorktree).map(([worktreeId, files]) => [
+          worktreeId,
+          files.map((file) => ({ ...file, worktreeId }))
+        ])
+      )
+    : undefined
+
+  return {
+    ...session,
+    activeRepoId,
+    activeWorktreeId,
+    tabsByWorktree: normalizedTabsByWorktree,
+    activeWorktreeIdsOnShutdown: mapWorktreeIds(session.activeWorktreeIdsOnShutdown),
+    openFilesByWorktree: normalizedOpenFilesByWorktree,
+    activeFileIdByWorktree: remapWorktreeRecord(session.activeFileIdByWorktree, mapWorktreeId),
+    browserTabsByWorktree: normalizedBrowserTabsByWorktree,
+    browserPagesByWorkspace: session.browserPagesByWorkspace
+      ? Object.fromEntries(
+          Object.entries(session.browserPagesByWorkspace)
+            .map(([workspaceId, pages]) => {
+              const mappedPages = pages
+                .map((page) => {
+                  const worktreeId = mapWorktreeId(page.worktreeId)
+                  return worktreeId ? { ...page, worktreeId } : null
+                })
+                .filter((page): page is NonNullable<typeof page> => page !== null)
+              return mappedPages.length > 0 ? ([workspaceId, mappedPages] as const) : null
+            })
+            .filter(
+              (entry): entry is readonly [string, NonNullable<typeof entry>[1]] => entry !== null
+            )
+        )
+      : undefined,
+    activeBrowserTabIdByWorktree: remapWorktreeRecord(
+      session.activeBrowserTabIdByWorktree,
+      mapWorktreeId
+    ),
+    activeTabTypeByWorktree: remapWorktreeRecord(session.activeTabTypeByWorktree, mapWorktreeId),
+    activeTabIdByWorktree: remapWorktreeRecord(session.activeTabIdByWorktree, mapWorktreeId),
+    unifiedTabs: normalizedUnifiedTabs,
+    tabGroups: normalizedTabGroups,
+    tabGroupLayouts: remapWorktreeRecord(session.tabGroupLayouts, mapWorktreeId),
+    activeGroupIdByWorktree: remapWorktreeRecord(session.activeGroupIdByWorktree, mapWorktreeId),
+    activeConnectionIdsAtShutdown: [targetId],
+    lastVisitedAtByWorktreeId: remapWorktreeRecord(session.lastVisitedAtByWorktreeId, mapWorktreeId)
+  }
+}
+
+type RemoteWorkspaceTargetScope = {
+  repoIds: Set<string>
+  worktreeIds: Set<string>
+}
+
+export function mergeRemoteWorkspaceSession(
+  current: WorkspaceSessionState,
+  remote: WorkspaceSessionState,
+  targetScope: RemoteWorkspaceTargetScope = { repoIds: new Set(), worktreeIds: new Set() }
+): WorkspaceSessionState {
+  const remoteWorktreeIds = new Set([
+    ...(remote.activeWorktreeId ? [remote.activeWorktreeId] : []),
+    ...Object.keys(remote.tabsByWorktree ?? {}),
+    ...(remote.activeWorktreeIdsOnShutdown ?? []),
+    ...Object.keys(remote.openFilesByWorktree ?? {}),
+    ...Object.keys(remote.activeFileIdByWorktree ?? {}),
+    ...Object.keys(remote.browserTabsByWorktree ?? {}),
+    ...Object.keys(remote.activeBrowserTabIdByWorktree ?? {}),
+    ...Object.keys(remote.activeTabTypeByWorktree ?? {}),
+    ...Object.keys(remote.activeTabIdByWorktree ?? {}),
+    ...Object.keys(remote.unifiedTabs ?? {}),
+    ...Object.keys(remote.tabGroups ?? {}),
+    ...Object.keys(remote.tabGroupLayouts ?? {}),
+    ...Object.keys(remote.activeGroupIdByWorktree ?? {}),
+    ...Object.keys(remote.lastVisitedAtByWorktreeId ?? {}),
+    ...Object.values(remote.browserPagesByWorkspace ?? {})
+      .flat()
+      .map((page) => page.worktreeId)
+  ])
+  const replacedWorktreeIds = new Set([...targetScope.worktreeIds, ...remoteWorktreeIds])
+  const remoteTerminalTabIds = new Set(
+    [
+      ...(remote.activeTabId ? [remote.activeTabId] : []),
+      ...Object.values(remote.tabsByWorktree ?? {})
+        .flat()
+        .map((tab) => tab.id),
+      ...Object.keys(remote.terminalLayoutsByTabId ?? {}),
+      ...Object.keys(remote.remoteSessionIdsByTabId ?? {})
+    ].filter((id): id is string => Boolean(id))
+  )
+  const replacedTerminalTabIds = new Set([
+    ...remoteTerminalTabIds,
+    ...Object.entries(current.tabsByWorktree ?? {})
+      .filter(([worktreeId]) => replacedWorktreeIds.has(worktreeId))
+      .flatMap(([, tabs]) => tabs.map((tab) => tab.id))
+  ])
+  const remoteBrowserWorkspaceIds = new Set(
+    [
+      ...Object.values(remote.browserTabsByWorktree ?? {})
+        .flat()
+        .map((tab) => tab.id),
+      ...Object.keys(remote.browserPagesByWorkspace ?? {}),
+      ...Object.values(remote.activeBrowserTabIdByWorktree ?? {}).filter(
+        (id): id is string => id !== null
+      )
+    ].filter((id): id is string => Boolean(id))
+  )
+  const replacedBrowserWorkspaceIds = new Set([
+    ...remoteBrowserWorkspaceIds,
+    ...Object.entries(current.browserTabsByWorktree ?? {})
+      .filter(([worktreeId]) => replacedWorktreeIds.has(worktreeId))
+      .flatMap(([, tabs]) => tabs.map((tab) => tab.id))
+  ])
+  // Why: an empty relay slice is an authoritative "all target tabs closed"
+  // snapshot. Replace the whole known target scope, not just remote keys.
+  const omitRemoteWorktrees = <T>(record: Record<string, T> | undefined): Record<string, T> =>
+    Object.fromEntries(
+      Object.entries(record ?? {}).filter(([worktreeId]) => !replacedWorktreeIds.has(worktreeId))
+    )
+  const currentActiveRepoId =
+    current.activeRepoId && targetScope.repoIds.has(current.activeRepoId)
+      ? null
+      : current.activeRepoId
+  const currentActiveWorktreeId =
+    current.activeWorktreeId && replacedWorktreeIds.has(current.activeWorktreeId)
+      ? null
+      : current.activeWorktreeId
+  const currentActiveTabId =
+    current.activeTabId && replacedTerminalTabIds.has(current.activeTabId)
+      ? null
+      : current.activeTabId
+
+  return {
+    ...current,
+    activeRepoId: remote.activeRepoId ?? currentActiveRepoId,
+    activeWorktreeId: remote.activeWorktreeId ?? currentActiveWorktreeId,
+    activeTabId: remote.activeTabId ?? currentActiveTabId,
+    tabsByWorktree: {
+      ...omitRemoteWorktrees(current.tabsByWorktree),
+      ...remote.tabsByWorktree
+    },
+    terminalLayoutsByTabId: {
+      ...Object.fromEntries(
+        Object.entries(current.terminalLayoutsByTabId ?? {}).filter(
+          ([tabId]) => !replacedTerminalTabIds.has(tabId)
+        )
+      ),
+      ...remote.terminalLayoutsByTabId
+    },
+    activeWorktreeIdsOnShutdown: [
+      ...(current.activeWorktreeIdsOnShutdown ?? []).filter((id) => !replacedWorktreeIds.has(id)),
+      ...(remote.activeWorktreeIdsOnShutdown ?? [])
+    ],
+    openFilesByWorktree: {
+      ...omitRemoteWorktrees(current.openFilesByWorktree),
+      ...remote.openFilesByWorktree
+    },
+    activeFileIdByWorktree: {
+      ...omitRemoteWorktrees(current.activeFileIdByWorktree),
+      ...remote.activeFileIdByWorktree
+    },
+    browserTabsByWorktree: {
+      ...omitRemoteWorktrees(current.browserTabsByWorktree),
+      ...remote.browserTabsByWorktree
+    },
+    browserPagesByWorkspace: {
+      ...Object.fromEntries(
+        Object.entries(current.browserPagesByWorkspace ?? {}).filter(
+          ([workspaceId]) => !replacedBrowserWorkspaceIds.has(workspaceId)
+        )
+      ),
+      ...remote.browserPagesByWorkspace
+    },
+    activeBrowserTabIdByWorktree: {
+      ...omitRemoteWorktrees(current.activeBrowserTabIdByWorktree),
+      ...remote.activeBrowserTabIdByWorktree
+    },
+    activeTabTypeByWorktree: {
+      ...omitRemoteWorktrees(current.activeTabTypeByWorktree),
+      ...remote.activeTabTypeByWorktree
+    },
+    activeTabIdByWorktree: {
+      ...omitRemoteWorktrees(current.activeTabIdByWorktree),
+      ...remote.activeTabIdByWorktree
+    },
+    unifiedTabs: {
+      ...omitRemoteWorktrees(current.unifiedTabs),
+      ...remote.unifiedTabs
+    },
+    tabGroups: {
+      ...omitRemoteWorktrees(current.tabGroups),
+      ...remote.tabGroups
+    },
+    tabGroupLayouts: {
+      ...omitRemoteWorktrees(current.tabGroupLayouts),
+      ...remote.tabGroupLayouts
+    },
+    activeGroupIdByWorktree: {
+      ...omitRemoteWorktrees(current.activeGroupIdByWorktree),
+      ...remote.activeGroupIdByWorktree
+    },
+    activeConnectionIdsAtShutdown: Array.from(
+      new Set([
+        ...(current.activeConnectionIdsAtShutdown ?? []),
+        ...(remote.activeConnectionIdsAtShutdown ?? [])
+      ])
+    ),
+    remoteSessionIdsByTabId: {
+      ...Object.fromEntries(
+        Object.entries(current.remoteSessionIdsByTabId ?? {}).filter(
+          ([tabId]) => !replacedTerminalTabIds.has(tabId)
+        )
+      ),
+      ...remote.remoteSessionIdsByTabId
+    },
+    lastVisitedAtByWorktreeId: {
+      ...omitRemoteWorktrees(current.lastVisitedAtByWorktreeId),
+      ...remote.lastVisitedAtByWorktreeId
+    }
+  }
+}
+
+async function hydrateRemoteWorkspaceSnapshot(
+  targetId: string,
+  snapshot: RemoteWorkspaceSnapshot
+): Promise<void> {
+  await runDuringRemoteWorkspaceHydration(async () => {
+    const store = useAppStore.getState()
+    const targetRepoIds = new Set(
+      store.repos.filter((repo) => repo.connectionId === targetId).map((repo) => repo.id)
+    )
+    const targetWorktreeIds = new Set(
+      Object.values(store.worktreesByRepo)
+        .flat()
+        .filter((worktree) => targetRepoIds.has(worktree.repoId))
+        .map((worktree) => worktree.id)
+    )
+    const translated = translateRemoteWorkspaceSessionIds(targetId, snapshot.session)
+    const merged = mergeRemoteWorkspaceSession(buildWorkspaceSessionPayload(store), translated, {
+      repoIds: targetRepoIds,
+      worktreeIds: targetWorktreeIds
+    })
+    store.hydrateWorkspaceSession(merged)
+    store.hydrateTabsSession(merged)
+    store.hydrateEditorSession(merged)
+    store.hydrateBrowserSession(merged)
+    await useAppStore.getState().reconnectPersistedTerminals()
+  })
+}
+
+async function fetchAndHydrateRemoteWorkspace(targetId: string): Promise<void> {
+  const snapshot = await window.api.remoteWorkspace?.get({ targetId })
+  if (snapshot) {
+    await hydrateRemoteWorkspaceSnapshot(targetId, snapshot)
+  }
+}
 
 export function useIpcEvents(): void {
   useEffect(() => {
@@ -649,10 +1011,7 @@ export function useIpcEvents(): void {
     // reflect the correct connected/disconnected state on app launch.
     void (async () => {
       try {
-        const targets = (await window.api.ssh.listTargets()) as {
-          id: string
-          label: string
-        }[]
+        const targets = await window.api.ssh.listTargets()
         // Why: populate target labels map so WorktreeCard (and other components)
         // can look up display labels without issuing per-card IPC calls.
         const labels = new Map<string, string>()
@@ -677,6 +1036,15 @@ export function useIpcEvents(): void {
               if (currentState?.status === 'connected') {
                 useAppStore.getState().setPortForwards(target.id, forwards)
                 useAppStore.getState().setDetectedPorts(target.id, detected)
+              }
+              if (target.remoteWorkspaceSyncEnabled) {
+                const repos = useAppStore
+                  .getState()
+                  .repos.filter((repo) => repo.connectionId === target.id)
+                await Promise.all(
+                  repos.map((repo) => useAppStore.getState().fetchWorktrees(repo.id))
+                )
+                void fetchAndHydrateRemoteWorkspace(target.id)
               }
             }
           }
@@ -772,7 +1140,6 @@ export function useIpcEvents(): void {
           // before the SSH connection was established. Bumping the generation
           // lets it detect that providers are now available and retry.
           store.bumpSshConnectedGeneration()
-
           void Promise.all(remoteRepos.map((r) => store.fetchWorktrees(r.id))).then(() => {
             // Why: terminal panes that failed to spawn (no PTY provider on cold
             // start) sit inert. Bumping generation forces TerminalPane to remount
@@ -798,10 +1165,33 @@ export function useIpcEvents(): void {
                 }))
               }
             }
+            void window.api.ssh
+              .listTargets()
+              .then((targets) => {
+                const target = targets.find((entry) => entry.id === data.targetId)
+                if (target?.remoteWorkspaceSyncEnabled) {
+                  void fetchAndHydrateRemoteWorkspace(data.targetId)
+                }
+              })
+              .catch(() => {})
           })
         }
       })
     )
+
+    let remoteWorkspaceClientId: string | null = null
+    void window.api.remoteWorkspace?.clientId().then((id) => {
+      remoteWorkspaceClientId = id
+    })
+    const unsubscribeRemoteWorkspace = window.api.remoteWorkspace?.onChanged((event) => {
+      if (event.sourceClientId && event.sourceClientId === remoteWorkspaceClientId) {
+        return
+      }
+      void hydrateRemoteWorkspaceSnapshot(event.targetId, event.snapshot)
+    })
+    if (unsubscribeRemoteWorkspace) {
+      unsubs.push(unsubscribeRemoteWorkspace)
+    }
 
     // Zoom handling for menu accelerators and keyboard fallback paths.
     unsubs.push(
