@@ -60,8 +60,12 @@ const scheduleRuntimeGraphSync = vi.fn()
 const shouldSeedCacheTimerOnInitialTitle = vi.fn(() => false)
 
 let mockStoreState: StoreState
+let storeSubscribers: ((state: StoreState) => void)[] = []
 let transportFactoryQueue: MockTransport[] = []
 let createdTransportOptions: Record<string, unknown>[] = []
+let windowFocusHandler: ((event: Event) => void) | null = null
+let windowListeners: Map<string, Set<(event: Event) => void>>
+let restoreDocumentHasFocus: (() => void) | null = null
 
 vi.mock('@/runtime/sync-runtime-graph', () => ({
   scheduleRuntimeGraphSync
@@ -69,7 +73,13 @@ vi.mock('@/runtime/sync-runtime-graph', () => ({
 
 vi.mock('@/store', () => ({
   useAppStore: {
-    getState: () => mockStoreState
+    getState: () => mockStoreState,
+    subscribe: (listener: (state: StoreState) => void) => {
+      storeSubscribers.push(listener)
+      return () => {
+        storeSubscribers = storeSubscribers.filter((entry) => entry !== listener)
+      }
+    }
   }
 }))
 
@@ -144,6 +154,24 @@ function createMockTransport(initialPtyId: string | null = null): MockTransport 
 }
 
 function createPane(paneId: number) {
+  const listeners = new Map<string, Set<(event: Event) => void>>()
+  const container = {
+    dataset: {},
+    addEventListener: vi.fn((event: string, handler: (event: Event) => void) => {
+      const handlers = listeners.get(event) ?? new Set<(nextEvent: Event) => void>()
+      handlers.add(handler)
+      listeners.set(event, handlers)
+    }),
+    removeEventListener: vi.fn((event: string, handler: (event: Event) => void) => {
+      listeners.get(event)?.delete(handler)
+    }),
+    dispatchEvent: vi.fn((event: Event) => {
+      for (const handler of listeners.get(event.type) ?? []) {
+        handler(event)
+      }
+      return true
+    })
+  }
   return {
     id: paneId,
     terminal: {
@@ -154,7 +182,7 @@ function createPane(paneId: number) {
       onResize: vi.fn(() => ({ dispose: vi.fn() })),
       onTitleChange: vi.fn(() => ({ dispose: vi.fn() }))
     },
-    container: { dataset: {} },
+    container,
     fitAddon: {
       fit: vi.fn()
     }
@@ -216,6 +244,10 @@ describe('connectPanePty', () => {
   beforeEach(() => {
     vi.resetModules()
     vi.clearAllMocks()
+    storeSubscribers = []
+    windowFocusHandler = null
+    windowListeners = new Map()
+    restoreDocumentHasFocus = null
     transportFactoryQueue = []
     createdTransportOptions = []
     mockStoreState = {
@@ -244,6 +276,26 @@ describe('connectPanePty', () => {
       removeAgentResumeBinding: vi.fn()
     } as StoreState
     ;(globalThis as unknown as { window: unknown }).window = {
+      addEventListener: vi.fn((event: string, handler: (event: Event) => void) => {
+        const handlers = windowListeners.get(event) ?? new Set<(nextEvent: Event) => void>()
+        handlers.add(handler)
+        windowListeners.set(event, handlers)
+        if (event === 'focus') {
+          windowFocusHandler = handler
+        }
+      }),
+      removeEventListener: vi.fn((event: string, handler: (event: Event) => void) => {
+        windowListeners.get(event)?.delete(handler)
+        if (event === 'focus' && windowFocusHandler === handler) {
+          windowFocusHandler = null
+        }
+      }),
+      dispatchEvent: vi.fn((event: Event) => {
+        for (const handler of windowListeners.get(event.type) ?? []) {
+          handler(event)
+        }
+        return true
+      }),
       api: {
         ssh: {
           connect: vi.fn().mockResolvedValue({ status: 'connected' }),
@@ -268,6 +320,10 @@ describe('connectPanePty', () => {
       return 1
     })
     globalThis.cancelAnimationFrame = vi.fn()
+    if (typeof document !== 'undefined' && typeof document.hasFocus === 'function') {
+      const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      restoreDocumentHasFocus = () => hasFocusSpy.mockRestore()
+    }
   })
 
   afterEach(() => {
@@ -283,6 +339,8 @@ describe('connectPanePty', () => {
       delete (globalThis as { cancelAnimationFrame?: typeof cancelAnimationFrame })
         .cancelAnimationFrame
     }
+    restoreDocumentHasFocus?.()
+    restoreDocumentHasFocus = null
     delete (globalThis as unknown as { window?: unknown }).window
   })
 
@@ -487,6 +545,239 @@ describe('connectPanePty', () => {
     ;(onDataHandler as (data: string) => void)('hello')
 
     expect(transport.sendInput).not.toHaveBeenCalled()
+  })
+
+  it('does not let an unfocused SSH tab drive shared PTY dimensions', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+
+    const transport = createMockTransport('pty-remote-1')
+    transportFactoryQueue.push(transport)
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+      sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
+    }
+
+    const pane = createPane(1)
+    const onResizeHandler: {
+      current: ((size: { cols: number; rows: number }) => void) | null
+    } = { current: null }
+    pane.terminal.onResize = vi.fn(((handler: (size: { cols: number; rows: number }) => void) => {
+      onResizeHandler.current = handler
+      return { dispose: vi.fn() }
+    }) as typeof pane.terminal.onResize)
+    const manager = createManager(1)
+    const deps = createDeps({ isActiveRef: { current: false } })
+
+    connectPanePty(pane as never, manager as never, deps as never)
+
+    const handleResize = onResizeHandler.current
+    expect(handleResize).toBeDefined()
+    if (!handleResize) {
+      throw new Error('expected onResize handler to be registered')
+    }
+    handleResize({ cols: 90, rows: 30 })
+
+    expect(transport.resize).not.toHaveBeenCalled()
+  })
+
+  it('omits attach dimensions when an unfocused SSH tab hits the detached attach path', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+
+    const transport = createMockTransport()
+    transportFactoryQueue.push(transport)
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: 'other-wt@@pty-remote-1' }] },
+      repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+      sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
+    }
+
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const deps = createDeps({ isActiveRef: { current: false } })
+
+    connectPanePty(pane as never, manager as never, deps as never)
+
+    expect(transport.attach).toHaveBeenCalledTimes(1)
+    const attachArgs = transport.attach.mock.calls[0][0] as Record<string, unknown>
+    expect(attachArgs.existingPtyId).toBe('other-wt@@pty-remote-1')
+    expect(attachArgs).not.toHaveProperty('cols')
+    expect(attachArgs).not.toHaveProperty('rows')
+  })
+
+  it('refits and resizes an SSH PTY after local terminal interaction', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+
+    const transport = createMockTransport('pty-remote-1')
+    transportFactoryQueue.push(transport)
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+      sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
+    }
+
+    const pane = createPane(1)
+    pane.terminal.cols = 132
+    pane.terminal.rows = 43
+    const manager = createManager(1)
+    const deps = createDeps()
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    transport.resize.mockClear()
+
+    pane.container.dispatchEvent(new Event('pointerdown'))
+
+    expect(pane.fitAddon.fit).toHaveBeenCalled()
+    expect(transport.resize).toHaveBeenCalledWith(132, 43)
+    const signal = (window as unknown as { api: { pty: { signal: ReturnType<typeof vi.fn> } } }).api
+      .pty.signal
+    expect(signal).toHaveBeenCalledWith('pty-remote-1', 'SIGWINCH')
+  })
+
+  it('refits and resizes an SSH PTY after local window resize', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+
+    const transport = createMockTransport('pty-remote-1')
+    transportFactoryQueue.push(transport)
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+      sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
+    }
+
+    const pane = createPane(1)
+    pane.terminal.cols = 144
+    pane.terminal.rows = 48
+    const manager = createManager(1)
+    const deps = createDeps()
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    transport.resize.mockClear()
+
+    window.dispatchEvent(new Event('resize'))
+
+    expect(pane.fitAddon.fit).toHaveBeenCalled()
+    expect(transport.resize).toHaveBeenCalledWith(144, 48)
+    const signal = (window as unknown as { api: { pty: { signal: ReturnType<typeof vi.fn> } } }).api
+      .pty.signal
+    expect(signal).toHaveBeenCalledWith('pty-remote-1', 'SIGWINCH')
+  })
+
+  it('uses local tab activation intent to resize a newly foreground SSH PTY', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+
+    const frameCallbacks: FrameRequestCallback[] = []
+    globalThis.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback)
+      return frameCallbacks.length
+    })
+    const transport = createMockTransport('pty-remote-1')
+    transportFactoryQueue.push(transport)
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+      sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
+    }
+
+    const pane = createPane(1)
+    pane.terminal.cols = 150
+    pane.terminal.rows = 50
+    const manager = createManager(1)
+    const deps = createDeps({ isActiveRef: { current: false } })
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    await flushAsyncTicks()
+    pane.fitAddon.fit.mockClear()
+    transport.resize.mockClear()
+
+    window.dispatchEvent(new Event('pointerdown'))
+    expect(windowListeners.get('pointerdown')?.size).toBeGreaterThan(0)
+    frameCallbacks.shift()?.(0)
+    expect(transport.resize).not.toHaveBeenCalled()
+
+    ;(deps.isActiveRef as { current: boolean }).current = true
+    expect(storeSubscribers.length).toBeGreaterThan(0)
+    for (const subscriber of storeSubscribers) {
+      subscriber(mockStoreState)
+    }
+    frameCallbacks.shift()?.(0)
+
+    expect(pane.fitAddon.fit).toHaveBeenCalled()
+    expect(transport.resize).toHaveBeenCalledWith(150, 50)
+    const signal = (window as unknown as { api: { pty: { signal: ReturnType<typeof vi.fn> } } }).api
+      .pty.signal
+    expect(signal).toHaveBeenCalledWith('pty-remote-1', 'SIGWINCH')
+  })
+
+  it('does not let synced remote workspace focus own SSH PTY dimensions', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const { runDuringRemoteWorkspaceHydration } =
+      await import('@/lib/remote-workspace-hydration-guard')
+
+    const transport = createMockTransport('pty-remote-1')
+    transportFactoryQueue.push(transport)
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+      sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
+    }
+
+    const pane = createPane(1)
+    pane.terminal.cols = 132
+    pane.terminal.rows = 43
+    const manager = createManager(1)
+    const deps = createDeps()
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    transport.resize.mockClear()
+    await runDuringRemoteWorkspaceHydration(async () => {})
+
+    pane.container.dispatchEvent(new Event('focusin'))
+    windowFocusHandler?.(new Event('focus'))
+
+    expect(transport.resize).not.toHaveBeenCalled()
+  })
+
+  it('does not treat xterm protocol replies as SSH PTY resize ownership', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const { runDuringRemoteWorkspaceHydration } =
+      await import('@/lib/remote-workspace-hydration-guard')
+
+    const transport = createMockTransport('pty-remote-1')
+    transportFactoryQueue.push(transport)
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+      sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
+    }
+
+    let onDataHandler: ((data: string) => void) | null = null
+    const pane = createPane(1)
+    pane.terminal.onData = vi.fn(((handler: (data: string) => void) => {
+      onDataHandler = handler
+      return { dispose: vi.fn() }
+    }) as typeof pane.terminal.onData)
+    const manager = createManager(1)
+    const deps = createDeps()
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    transport.resize.mockClear()
+    await runDuringRemoteWorkspaceHydration(async () => {})
+
+    if (!onDataHandler) {
+      throw new Error('expected onData handler to be registered')
+    }
+    ;(onDataHandler as (data: string) => void)('\x1b[I')
+    windowFocusHandler?.(new Event('focus'))
+
+    expect(transport.resize).not.toHaveBeenCalled()
   })
 
   it('sends startup command via sendInput for SSH connections (relay has no shell-ready mechanism)', async () => {
@@ -1044,6 +1335,38 @@ describe('connectPanePty', () => {
       POST_REPLAY_FOCUS_REPORTING_RESET,
       expect.any(Function)
     )
+    expect(api.pty.signal).not.toHaveBeenCalledWith('leaf-session', 'SIGWINCH')
+  })
+
+  it('resizes restored SSH session after local window input before reconnect completes', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async (opts: { sessionId?: string }) => {
+      return { id: opts.sessionId ?? 'pty-new', replay: 'restored-ssh-output' }
+    })
+    transportFactoryQueue.push(transport)
+
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'conn-1' }],
+      deferredSshReconnectTargets: ['conn-1'],
+      deferredSshSessionIdsByTabId: { 'tab-1': 'tab-level-stale-session' }
+    }
+
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const deps = createDeps({
+      restoredLeafId: 'leaf-1',
+      restoredPtyIdByLeafId: { 'leaf-1': 'leaf-session' }
+    })
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    window.dispatchEvent(new Event('pointerdown'))
+    await flushAsyncTicks(20)
+
+    const api = (window as unknown as { api: { pty: { signal: ReturnType<typeof vi.fn> } } }).api
+    expect(transport.resize).toHaveBeenCalledWith(120, 40)
     expect(api.pty.signal).toHaveBeenCalledWith('leaf-session', 'SIGWINCH')
   })
 
@@ -1091,12 +1414,8 @@ describe('connectPanePty', () => {
     try {
       const { connectPanePty } = await import('./pty-connection')
       const transport = createMockTransport()
-      transport.connect.mockImplementation(async (opts: { callbacks?: ConnectCallbacks }) => {
-        opts.callbacks?.onError?.(
-          'SSH connection is not active. Use the reconnect dialog or Settings to connect.'
-        )
-        return undefined
-      })
+      const connectDeferred = createDeferred<unknown>()
+      transport.connect.mockImplementation(() => connectDeferred.promise)
       transportFactoryQueue.push(transport)
 
       mockStoreState = {
@@ -1118,7 +1437,7 @@ describe('connectPanePty', () => {
       expect(transport.connect).toHaveBeenCalledWith(
         expect.objectContaining({
           sessionId: 'restored-session',
-          waitForProviderRegistration: false
+          waitForProviderRegistration: true
         })
       )
       expect(mockStoreState.removeDeferredSshSessionId).not.toHaveBeenCalled()
@@ -1128,6 +1447,7 @@ describe('connectPanePty', () => {
       expect(deps.onPtyErrorRef.current).not.toHaveBeenCalled()
 
       disposable.dispose()
+      connectDeferred.resolve(undefined)
       await vi.runOnlyPendingTimersAsync()
       await flushAsyncTicks(5)
     } finally {

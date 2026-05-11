@@ -124,4 +124,21 @@ describe('WorkspaceSessionHandler', () => {
       snapshot: { revision: 1, session: { activeRepoId: 'repo-1' } }
     })
   })
+
+  it('tracks connected workspace clients by namespace', async () => {
+    const result = await dispatcher.callRequest('workspace.presence', {
+      namespace: 'target-a',
+      clientId: 'client-1',
+      clientName: 'MacBook Pro'
+    })
+
+    expect(result).toMatchObject({
+      clients: [
+        {
+          clientId: 'client-1',
+          name: 'MacBook Pro'
+        }
+      ]
+    })
+  })
 })

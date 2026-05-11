@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({
   app: { getAppPath: () => '/mock/app' }
@@ -33,8 +33,26 @@ vi.mock('./ssh-connection-utils', () => ({
 }))
 
 import { deployAndLaunchRelay } from './ssh-relay-deploy'
-import { execCommand } from './ssh-relay-deploy-helpers'
+import { execCommand, uploadDirectory } from './ssh-relay-deploy-helpers'
 import type { SshConnection } from './ssh-connection'
+import { existsSync } from 'fs'
+
+const originalResourcesPathDescriptor = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+
+function setResourcesPath(value: string | undefined): void {
+  Object.defineProperty(process, 'resourcesPath', {
+    value,
+    configurable: true
+  })
+}
+
+function restoreResourcesPath(): void {
+  if (originalResourcesPathDescriptor) {
+    Object.defineProperty(process, 'resourcesPath', originalResourcesPathDescriptor)
+  } else {
+    Reflect.deleteProperty(process, 'resourcesPath')
+  }
+}
 
 function makeMockConnection(): SshConnection {
   return {
@@ -63,6 +81,12 @@ function makeMockConnection(): SshConnection {
 describe('deployAndLaunchRelay', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(existsSync).mockReturnValue(false)
+    setResourcesPath(undefined)
+  })
+
+  afterEach(() => {
+    restoreResourcesPath()
   })
 
   it('calls exec to detect remote platform', async () => {
@@ -95,6 +119,33 @@ describe('deployAndLaunchRelay', () => {
 
     expect(progress).toContain('Detecting remote platform...')
     expect(progress).toContain('Starting relay...')
+  })
+
+  it('uploads relay from packaged resources path', async () => {
+    setResourcesPath('/mock/resources')
+    vi.mocked(existsSync).mockImplementation(
+      (candidate) => String(candidate) === '/mock/resources/relay/linux-x64'
+    )
+    const conn = makeMockConnection()
+    const mockExecCommand = vi.mocked(execCommand)
+    mockExecCommand
+      .mockResolvedValueOnce('Linux x86_64')
+      .mockResolvedValueOnce('/home/user')
+      .mockResolvedValueOnce('MISSING')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('DEAD')
+      .mockResolvedValueOnce('READY')
+
+    await deployAndLaunchRelay(conn)
+
+    expect(uploadDirectory).toHaveBeenCalledWith(
+      expect.anything(),
+      '/mock/resources/relay/linux-x64',
+      '/home/user/.orca-remote/relay-v0.1.0'
+    )
   })
 
   it('has a 120-second overall timeout', async () => {

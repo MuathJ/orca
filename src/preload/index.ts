@@ -1398,6 +1398,8 @@ const api = {
     }): Promise<unknown> => ipcRenderer.invoke('remoteWorkspace:setForConnectedTargets', args),
     listEnabledConnectedTargets: (): Promise<string[]> =>
       ipcRenderer.invoke('remoteWorkspace:listEnabledConnectedTargets'),
+    listConnectedClients: (args?: { targetIds?: string[] }): Promise<unknown> =>
+      ipcRenderer.invoke('remoteWorkspace:listConnectedClients', args),
     clientId: (): Promise<string> => ipcRenderer.invoke('remoteWorkspace:clientId'),
     onChanged: (callback: (event: unknown) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)

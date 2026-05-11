@@ -86,6 +86,22 @@ describe('registerRemoteWorkspaceHandlers', () => {
           }
         }
       }
+      if (method === 'workspace.presence') {
+        return {
+          clients: [
+            {
+              clientId: params.clientId,
+              name: params.clientName,
+              lastSeenAt: 100
+            },
+            {
+              clientId: 'other-client',
+              name: 'Work laptop',
+              lastSeenAt: 90
+            }
+          ]
+        }
+      }
       throw new Error(`Unexpected method: ${method}`)
     })
   })
@@ -147,6 +163,43 @@ describe('registerRemoteWorkspaceHandlers', () => {
     expect(patchSession.activeWorktreeId).toBe(worktreeId)
     expect(patchSession.openFilesByWorktree?.[worktreeId]).toHaveLength(1)
     expect(patchSession.unifiedTabs?.[worktreeId]?.[0]?.contentType).toBe('editor')
+  })
+
+  it('lists connected remote workspace clients with the current device marked', async () => {
+    const { registerRemoteWorkspaceHandlers } = await import('./remote-workspace')
+    const store = createStore()
+    registerRemoteWorkspaceHandlers(store as never)
+
+    const handler = handlers.get('remoteWorkspace:listConnectedClients')
+    const result = (await handler?.(null, { targetIds: ['target-1'] })) as {
+      targetId: string
+      clients: { clientId: string; name: string; isCurrent?: boolean }[]
+    }[]
+
+    expect(result).toHaveLength(1)
+    expect(result[0].targetId).toBe('target-1')
+    expect(result[0].clients[0]).toMatchObject({ name: expect.any(String), isCurrent: true })
+    expect(result[0].clients[1]).toMatchObject({ name: 'Work laptop', isCurrent: false })
+  })
+
+  it('treats missing workspace presence support as unavailable metadata', async () => {
+    const { registerRemoteWorkspaceHandlers } = await import('./remote-workspace')
+    const store = createStore()
+    mux.request.mockImplementation(async (method: string) => {
+      if (method === 'workspace.presence') {
+        throw new Error('Method not found: workspace.presence')
+      }
+      throw new Error(`Unexpected method: ${method}`)
+    })
+    registerRemoteWorkspaceHandlers(store as never)
+
+    const handler = handlers.get('remoteWorkspace:listConnectedClients')
+    const result = (await handler?.(null, { targetIds: ['target-1'] })) as {
+      targetId: string
+      clients: unknown[]
+    }[]
+
+    expect(result).toEqual([{ targetId: 'target-1', clients: [] }])
   })
 
   it('does not push a target before the renderer has hydrated it', async () => {

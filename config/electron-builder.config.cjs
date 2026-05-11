@@ -2,6 +2,12 @@ const { chmodSync, existsSync, readdirSync } = require('node:fs')
 const { join } = require('node:path')
 
 const isMacRelease = process.env.ORCA_MAC_RELEASE === '1'
+// Why: SSH deploy resolves relay bundles from process.resourcesPath in packaged
+// apps; implicit inclusion inside app.asar is not a real filesystem directory.
+const relayExtraResource = {
+  from: 'out/relay',
+  to: 'relay'
+}
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
@@ -42,7 +48,12 @@ module.exports = {
   afterPack: async (context) => {
     const resourcesDir =
       context.electronPlatformName === 'darwin'
-        ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+        ? join(
+            context.appOutDir,
+            `${context.packager.appInfo.productFilename}.app`,
+            'Contents',
+            'Resources'
+          )
         : join(context.appOutDir, 'resources')
     if (!existsSync(resourcesDir)) {
       return
@@ -60,6 +71,7 @@ module.exports = {
   win: {
     executableName: 'Orca',
     extraResources: [
+      relayExtraResource,
       {
         from: 'resources/win32/bin/orca.cmd',
         to: 'bin/orca.cmd'
@@ -108,6 +120,7 @@ module.exports = {
     hardenedRuntime: isMacRelease,
     notarize: isMacRelease,
     extraResources: [
+      relayExtraResource,
       {
         from: 'resources/darwin/bin/orca',
         to: 'bin/orca'
@@ -136,6 +149,7 @@ module.exports = {
   },
   linux: {
     extraResources: [
+      relayExtraResource,
       {
         from: 'resources/linux/bin/orca',
         to: 'bin/orca'

@@ -10,6 +10,12 @@ type RemoteWorkspaceSnapshot = {
   session: Record<string, unknown>
 }
 
+type ConnectedClient = {
+  clientId: string
+  name: string
+  lastSeenAt: number
+}
+
 type PatchResult =
   | { ok: true; snapshot: RemoteWorkspaceSnapshot }
   | {
@@ -36,6 +42,7 @@ function sanitizeNamespace(namespace: unknown): string {
 
 export class WorkspaceSessionHandler {
   private readonly baseDir: string
+  private readonly clientsByNamespace = new Map<string, Map<string, ConnectedClient>>()
 
   constructor(
     private dispatcher: RelayDispatcher,
@@ -44,6 +51,7 @@ export class WorkspaceSessionHandler {
     this.baseDir = baseDir
     this.dispatcher.onRequest('workspace.get', (params) => this.get(params))
     this.dispatcher.onRequest('workspace.patch', (params) => this.patch(params))
+    this.dispatcher.onRequest('workspace.presence', (params) => this.presence(params))
   }
 
   private snapshotPath(namespace: string): string {
@@ -130,4 +138,40 @@ export class WorkspaceSessionHandler {
     })
     return { ok: true, snapshot }
   }
+
+  private async presence(params: Record<string, unknown>): Promise<{ clients: ConnectedClient[] }> {
+    const namespace = sanitizeNamespace(params.namespace)
+    const clientId = typeof params.clientId === 'string' ? sanitizeClientId(params.clientId) : ''
+    const name = typeof params.clientName === 'string' ? sanitizeClientName(params.clientName) : ''
+    const clients = this.clientsByNamespace.get(namespace) ?? new Map<string, ConnectedClient>()
+    this.clientsByNamespace.set(namespace, clients)
+
+    const now = Date.now()
+    for (const [id, client] of clients) {
+      if (now - client.lastSeenAt > PRESENCE_TTL_MS) {
+        clients.delete(id)
+      }
+    }
+    if (clientId) {
+      clients.set(clientId, {
+        clientId,
+        name: name || 'Unknown device',
+        lastSeenAt: now
+      })
+    }
+
+    return {
+      clients: Array.from(clients.values()).sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+    }
+  }
+}
+
+const PRESENCE_TTL_MS = 45_000
+
+function sanitizeClientName(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 80)
+}
+
+function sanitizeClientId(value: string): string {
+  return value.trim().slice(0, 200)
 }

@@ -7,6 +7,13 @@ export type RemoteWorkspaceSnapshot = {
   session: WorkspaceSessionState
 }
 
+export type RemoteWorkspaceConnectedClient = {
+  clientId: string
+  name: string
+  lastSeenAt: number
+  isCurrent?: boolean
+}
+
 export type RemoteWorkspacePatch = {
   kind: 'replace-session'
   session: WorkspaceSessionState

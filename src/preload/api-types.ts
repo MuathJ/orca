@@ -159,6 +159,7 @@ import type { TelemetryConsentState } from '../shared/telemetry-consent-types'
 import type { AgentKind, LaunchSource, RequestKind } from '../shared/telemetry-events'
 import type {
   RemoteWorkspaceChangedEvent,
+  RemoteWorkspaceConnectedClient,
   RemoteWorkspacePatchResult,
   RemoteWorkspaceSnapshot
 } from '../shared/remote-workspace-types'
@@ -848,6 +849,9 @@ export type PreloadApi = {
       targetScopes?: Record<string, { worktreePaths: string[] }>
     }) => Promise<{ targetId: string; result: RemoteWorkspacePatchResult }[]>
     listEnabledConnectedTargets: () => Promise<string[]>
+    listConnectedClients: (args?: {
+      targetIds?: string[]
+    }) => Promise<{ targetId: string; clients: RemoteWorkspaceConnectedClient[] }[]>
     clientId: () => Promise<string>
     onChanged: (callback: (event: RemoteWorkspaceChangedEvent) => void) => () => void
   }

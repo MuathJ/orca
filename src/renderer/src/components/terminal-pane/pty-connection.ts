@@ -21,11 +21,10 @@ import {
 import { warnTerminalLifecycleAnomaly } from './terminal-lifecycle-diagnostics'
 import { registerPtySerializer, registerPtyTitleSource } from './pty-buffer-serializer'
 import { buildAgentResumeCommand } from '@/lib/agent-resume-command'
+import { getLastRemoteWorkspaceHydrationAt } from '@/lib/remote-workspace-hydration-guard'
 import type { AgentResumeBinding } from '../../../../shared/types'
 
 const pendingSpawnByPaneKey = new Map<string, Promise<string | null>>()
-const SSH_PROVIDER_READY_RETRY_MS = 250
-const SSH_PROVIDER_READY_MAX_ATTEMPTS = 40
 const SSH_PROVIDER_UNAVAILABLE_MESSAGE =
   'SSH connection is not active. Use the reconnect dialog or Settings to connect.'
 
@@ -73,10 +72,6 @@ function isSshProviderUnavailableMessage(message: string | null): boolean {
     (message.includes('No PTY provider for connection') ||
       message.includes(SSH_PROVIDER_UNAVAILABLE_MESSAGE))
   )
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function isCodexPaneStale(args: { tabId: string; panePtyId: string | null }): boolean {
@@ -333,6 +328,44 @@ export function connectPanePty(
   const connectionId = repo?.connectionId ?? null
   const tab = (state.tabsByWorktree[deps.worktreeId] ?? []).find((t) => t.id === deps.tabId)
   const shellOverride = tab?.shellOverride
+  const isRemoteConnection = connectionId !== null
+
+  const hasFocusedWindow = (): boolean =>
+    typeof document === 'undefined' || typeof document.hasFocus !== 'function'
+      ? true
+      : document.hasFocus()
+  let lastLocalResizeIntentAt = 0
+  const hasLocalResizeIntent = (): boolean =>
+    lastLocalResizeIntentAt > getLastRemoteWorkspaceHydrationAt()
+
+  const isForegroundTerminal = (): boolean =>
+    deps.isActiveRef.current &&
+    deps.isVisibleRef.current &&
+    hasFocusedWindow() &&
+    hasLocalResizeIntent()
+
+  const canDrivePtyResize = (ptyId: string | null): boolean => {
+    if (ptyId && (getFitOverrideForPty(ptyId) || isPtyLocked(ptyId))) {
+      return false
+    }
+    // Why: remote PTY dimensions are global to the SSH host. Background tabs
+    // must not resize a shared Codex/Claude TUI just because another device
+    // has a different window size; the focused client takes ownership below.
+    return !isRemoteConnection || isForegroundTerminal()
+  }
+  // Why: local input can land in the same millisecond as hydration completion;
+  // it still wins because it is trusted DOM input from this device.
+  const currentLocalResizeIntentTime = (): number =>
+    Math.max(Date.now(), getLastRemoteWorkspaceHydrationAt() + 1)
+
+  // Why: transport.attach immediately forwards provided cols/rows to pty:resize.
+  // Remote background reattaches must omit them or they bypass the ownership gate.
+  const attachDimensionsForPty = (
+    ptyId: string,
+    nextCols: number,
+    nextRows: number
+  ): { cols?: number; rows?: number } =>
+    canDrivePtyResize(ptyId) ? { cols: nextCols, rows: nextRows } : {}
 
   const transport = createIpcPtyTransport({
     cwd: deps.cwd,
@@ -381,6 +414,73 @@ export function connectPanePty(
   })
   const hasExistingPaneTransport = deps.paneTransportsRef.current.size > 0
   deps.paneTransportsRef.current.set(pane.id, transport)
+
+  let pendingFocusedResizeFrame: number | null = null
+  const resizeRemotePtyForFocusedPane = (): void => {
+    pendingFocusedResizeFrame = null
+    if (disposed || !isRemoteConnection || !isForegroundTerminal()) {
+      return
+    }
+    safeFit(pane)
+    const currentPtyId = transport.getPtyId()
+    if (!currentPtyId || !canDrivePtyResize(currentPtyId)) {
+      return
+    }
+    transport.resize(pane.terminal.cols, pane.terminal.rows)
+    // Why: some full-screen TUIs only repaint cleanly after SIGWINCH. Send it
+    // on focus ownership changes even when cols/rows are numerically unchanged.
+    void Promise.resolve(window.api.pty.signal(currentPtyId, 'SIGWINCH')).catch(() => {})
+  }
+  const scheduleFocusedRemoteResize = (): void => {
+    if (!isRemoteConnection || pendingFocusedResizeFrame !== null) {
+      return
+    }
+    pendingFocusedResizeFrame = requestAnimationFrame(resizeRemotePtyForFocusedPane)
+  }
+  const markLocalResizeIntent = (): void => {
+    lastLocalResizeIntentAt = currentLocalResizeIntentTime()
+    scheduleFocusedRemoteResize()
+  }
+  const markWindowLocalResizeIntent = (): void => {
+    if (!hasFocusedWindow()) {
+      return
+    }
+    // Why: tab/sidebar clicks happen before the newly selected pane's active
+    // refs update. Record trusted local window input now; only the pane that
+    // later becomes foreground is allowed to consume it for SSH PTY resize.
+    markLocalResizeIntent()
+  }
+
+  if (isRemoteConnection && typeof pane.container.addEventListener === 'function') {
+    // Why: synced workspace activation can make a tab active on another device.
+    // Only local pane interaction should own the shared SSH PTY dimensions.
+    pane.container.addEventListener('pointerdown', markLocalResizeIntent, { capture: true })
+  }
+
+  let wasForegroundTerminal = isForegroundTerminal()
+  const unsubscribeFocusedResize =
+    isRemoteConnection && typeof useAppStore.subscribe === 'function'
+      ? useAppStore.subscribe(() => {
+          const nextForegroundTerminal = isForegroundTerminal()
+          if (nextForegroundTerminal && !wasForegroundTerminal) {
+            scheduleFocusedRemoteResize()
+          }
+          wasForegroundTerminal = nextForegroundTerminal
+        })
+      : undefined
+  const onWindowFocus = (): void => {
+    wasForegroundTerminal = isForegroundTerminal()
+    scheduleFocusedRemoteResize()
+  }
+  if (isRemoteConnection && typeof window.addEventListener === 'function') {
+    window.addEventListener('focus', onWindowFocus)
+    // Why: reconnecting from the status menu is local user intent, but the
+    // click happens outside the terminal pane. Count local window input/resize
+    // without trusting xterm protocol replies or synced focus replay.
+    window.addEventListener('pointerdown', markWindowLocalResizeIntent, { capture: true })
+    window.addEventListener('keydown', markWindowLocalResizeIntent, { capture: true })
+    window.addEventListener('resize', markWindowLocalResizeIntent)
+  }
 
   const onDataDisposable = pane.terminal.onData((data) => {
     // Why: xterm auto-replies to embedded query sequences (DA1, DECRQM,
@@ -433,7 +533,7 @@ export function connectPanePty(
     // The pty:resize IPC has a defense-in-depth twin. See
     // docs/mobile-presence-lock.md.
     const currentPtyId = transport.getPtyId()
-    if (currentPtyId && (getFitOverrideForPty(currentPtyId) || isPtyLocked(currentPtyId))) {
+    if (!canDrivePtyResize(currentPtyId)) {
       return
     }
     transport.resize(cols, rows)
@@ -777,13 +877,16 @@ export function connectPanePty(
       // Why: when a mobile-fit override is active, skip sending desktop dims
       // to the PTY — the PTY is already at phone dimensions and must stay there.
       const reattachPtyId = transport.getPtyId()
-      if (!reattachPtyId || !getFitOverrideForPty(reattachPtyId)) {
+      const shouldDriveReattachResize = canDrivePtyResize(reattachPtyId)
+      if (shouldDriveReattachResize) {
         transport.resize(cols, rows)
       }
       // Why: POSIX only delivers SIGWINCH when terminal dimensions actually
       // change. Sending it explicitly guarantees restored TUIs repaint at
       // the correct cursor position after snapshot replay.
-      window.api.pty.signal(ptyId, 'SIGWINCH')
+      if (shouldDriveReattachResize || !isRemoteConnection) {
+        window.api.pty.signal(ptyId, 'SIGWINCH')
+      }
 
       scheduleRuntimeGraphSync()
     }
@@ -800,69 +903,46 @@ export function connectPanePty(
       sessionId: string
     ): Promise<RestoredSshSessionAttempt> => {
       let lastUnavailableMessage = SSH_PROVIDER_UNAVAILABLE_MESSAGE
-      for (let attempt = 0; attempt < SSH_PROVIDER_READY_MAX_ATTEMPTS; attempt++) {
-        const preSignalPromise = window.api.pty
-          .declarePendingPaneSerializer(cacheKey)
-          .catch(() => null)
-        let callbackError: string | null = null
-        let result: PtyConnectResult | string | void
-        try {
-          result = await transport.connect({
-            url: '',
-            cols,
-            rows,
-            sessionId,
-            // Why: this path already owns a bounded 40x250ms provider retry.
-            // Main's 10s wait per pty:spawn would multiply into minutes when
-            // a restored SSH target is offline.
-            waitForProviderRegistration: false,
-            callbacks: {
-              onData: dataCallback,
-              onReplayData: replayDataCallback,
-              onError: (message) => {
-                callbackError = message
-                if (!isSshProviderUnavailableMessage(message)) {
-                  reportError(message)
-                }
+      const preSignalPromise = window.api.pty
+        .declarePendingPaneSerializer(cacheKey)
+        .catch(() => null)
+      let callbackError: string | null = null
+      let result: PtyConnectResult | string | void
+      try {
+        result = await transport.connect({
+          url: '',
+          cols,
+          rows,
+          sessionId,
+          // Why: ssh:connect can report connected a moment before relay PTY
+          // providers are registered. Let main wait once so startup does not
+          // spam failing pty:spawn IPC calls while preserving the saved session.
+          waitForProviderRegistration: true,
+          callbacks: {
+            onData: dataCallback,
+            onReplayData: replayDataCallback,
+            onError: (message) => {
+              callbackError = message
+              if (!isSshProviderUnavailableMessage(message)) {
+                reportError(message)
               }
             }
-          })
-        } catch (err) {
-          callbackError = err instanceof Error ? err.message : String(err)
-          result = undefined
-        }
-
-        const gen = await preSignalPromise
-        if (disposed) {
-          if (typeof gen === 'number') {
-            void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
           }
-          return { kind: 'provider-unavailable', message: lastUnavailableMessage }
-        }
+        })
+      } catch (err) {
+        callbackError = err instanceof Error ? err.message : String(err)
+        result = undefined
+      }
 
-        if (result) {
-          return {
-            kind: 'result',
-            result,
-            preSignalGen: typeof gen === 'number' ? gen : null
-          }
+      const gen = await preSignalPromise
+      if (disposed) {
+        if (typeof gen === 'number') {
+          void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
         }
+        return { kind: 'provider-unavailable', message: lastUnavailableMessage }
+      }
 
-        if (isSshProviderUnavailableMessage(callbackError)) {
-          lastUnavailableMessage = callbackError ?? SSH_PROVIDER_UNAVAILABLE_MESSAGE
-          if (typeof gen === 'number') {
-            void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
-          }
-          if (attempt < SSH_PROVIDER_READY_MAX_ATTEMPTS - 1) {
-            await delay(SSH_PROVIDER_READY_RETRY_MS)
-            if (disposed) {
-              return { kind: 'provider-unavailable', message: lastUnavailableMessage }
-            }
-            continue
-          }
-          return { kind: 'provider-unavailable', message: lastUnavailableMessage }
-        }
-
+      if (result) {
         return {
           kind: 'result',
           result,
@@ -870,7 +950,19 @@ export function connectPanePty(
         }
       }
 
-      return { kind: 'provider-unavailable', message: lastUnavailableMessage }
+      if (isSshProviderUnavailableMessage(callbackError)) {
+        lastUnavailableMessage = callbackError ?? SSH_PROVIDER_UNAVAILABLE_MESSAGE
+        if (typeof gen === 'number') {
+          void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
+        }
+        return { kind: 'provider-unavailable', message: lastUnavailableMessage }
+      }
+
+      return {
+        kind: 'result',
+        result,
+        preSignalGen: typeof gen === 'number' ? gen : null
+      }
     }
 
     // Why: if this tab has a deferred SSH session ID, trigger the SSH
@@ -1160,8 +1252,7 @@ export function connectPanePty(
       try {
         transport.attach({
           existingPtyId: detachedLivePtyId,
-          cols,
-          rows,
+          ...attachDimensionsForPty(detachedLivePtyId, cols, rows),
           callbacks: {
             onData: dataCallback,
             onReplayData: replayDataCallback,
@@ -1212,8 +1303,7 @@ export function connectPanePty(
             deps.updateTabPtyId(deps.tabId, spawnedPtyId)
             transport.attach({
               existingPtyId: spawnedPtyId,
-              cols,
-              rows,
+              ...attachDimensionsForPty(spawnedPtyId, cols, rows),
               callbacks: {
                 onData: dataCallback,
                 onReplayData: replayDataCallback,
@@ -1259,6 +1349,20 @@ export function connectPanePty(
       }
       onDataDisposable.dispose()
       onResizeDisposable.dispose()
+      unsubscribeFocusedResize?.()
+      if (typeof pane.container.removeEventListener === 'function') {
+        pane.container.removeEventListener('pointerdown', markLocalResizeIntent, { capture: true })
+      }
+      if (typeof window.removeEventListener === 'function') {
+        window.removeEventListener('focus', onWindowFocus)
+        window.removeEventListener('pointerdown', markWindowLocalResizeIntent, { capture: true })
+        window.removeEventListener('keydown', markWindowLocalResizeIntent, { capture: true })
+        window.removeEventListener('resize', markWindowLocalResizeIntent)
+      }
+      if (pendingFocusedResizeFrame !== null) {
+        cancelAnimationFrame(pendingFocusedResizeFrame)
+        pendingFocusedResizeFrame = null
+      }
       geometryReportObserver?.disconnect()
       if (pendingGeometryReportRaf !== null) {
         cancelAnimationFrame(pendingGeometryReportRaf)

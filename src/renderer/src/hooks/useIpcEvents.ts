@@ -456,7 +456,60 @@ async function hydrateRemoteWorkspaceSnapshot(
   })
 }
 
+const appliedRemoteWorkspaceRevisionByTarget = new Map<string, number>()
+const remoteWorkspaceHydrationQueueByTarget = new Map<string, Promise<unknown>>()
 const remoteWorkspaceHydrationInFlight = new Set<string>()
+
+// Why: remote push events and explicit fetches can arrive together. Serializing
+// per target prevents duplicate reconnect/replay passes for the same SSH PTY.
+async function applyRemoteWorkspaceSnapshot(
+  targetId: string,
+  snapshot: RemoteWorkspaceSnapshot,
+  message: string
+): Promise<'applied' | 'skipped'> {
+  const previous = remoteWorkspaceHydrationQueueByTarget.get(targetId) ?? Promise.resolve()
+  const task = previous
+    .catch(() => {
+      // Keep later snapshots moving even if the previous hydrate failed.
+    })
+    .then(async (): Promise<'applied' | 'skipped'> => {
+      const store = useAppStore.getState()
+      const lastAppliedRevision = appliedRemoteWorkspaceRevisionByTarget.get(targetId)
+      if (
+        store.remoteWorkspaceHydratedTargetIds?.has(targetId) &&
+        lastAppliedRevision !== undefined &&
+        snapshot.revision <= lastAppliedRevision
+      ) {
+        return 'skipped'
+      }
+
+      setRemoteWorkspaceSyncStatus(targetId, {
+        phase: 'pulling',
+        direction: 'pull',
+        revision: snapshot.revision,
+        message
+      })
+      await hydrateRemoteWorkspaceSnapshot(targetId, snapshot)
+      appliedRemoteWorkspaceRevisionByTarget.set(targetId, snapshot.revision)
+      useAppStore.getState().markRemoteWorkspaceHydrated(targetId)
+      setRemoteWorkspaceSyncStatus(targetId, {
+        phase: 'synced',
+        direction: 'pull',
+        revision: snapshot.revision,
+        lastSyncedAt: Date.now(),
+        message: 'Workspace synced'
+      })
+      return 'applied'
+    })
+  remoteWorkspaceHydrationQueueByTarget.set(targetId, task)
+  try {
+    return await task
+  } finally {
+    if (remoteWorkspaceHydrationQueueByTarget.get(targetId) === task) {
+      remoteWorkspaceHydrationQueueByTarget.delete(targetId)
+    }
+  }
+}
 
 async function fetchAndHydrateRemoteWorkspace(targetId: string): Promise<void> {
   if (remoteWorkspaceHydrationInFlight.has(targetId)) {
@@ -481,18 +534,11 @@ async function fetchAndHydrateRemoteWorkspace(targetId: string): Promise<void> {
     }
     const snapshot = await window.api.remoteWorkspace?.get({ targetId })
     if (snapshot) {
-      await hydrateRemoteWorkspaceSnapshot(targetId, snapshot)
-      useAppStore.getState().markRemoteWorkspaceHydrated(targetId)
-      setRemoteWorkspaceSyncStatus(targetId, {
-        phase: 'synced',
-        direction: 'pull',
-        revision: snapshot.revision,
-        lastSyncedAt: Date.now(),
-        message: 'Workspace synced'
-      })
+      await applyRemoteWorkspaceSnapshot(targetId, snapshot, 'Loading synced workspace')
       return
     }
     useAppStore.getState().clearRemoteWorkspaceHydrated(targetId)
+    appliedRemoteWorkspaceRevisionByTarget.delete(targetId)
     setRemoteWorkspaceSyncStatus(targetId, {
       phase: 'idle',
       direction: 'pull',
@@ -500,6 +546,7 @@ async function fetchAndHydrateRemoteWorkspace(targetId: string): Promise<void> {
     })
   } catch (err) {
     useAppStore.getState().clearRemoteWorkspaceHydrated(targetId)
+    appliedRemoteWorkspaceRevisionByTarget.delete(targetId)
     setRemoteWorkspaceSyncStatus(targetId, {
       phase: 'error',
       direction: 'pull',
@@ -1344,32 +1391,20 @@ export function useIpcEvents(): void {
         void fetchAndHydrateRemoteWorkspace(event.targetId)
         return
       }
-      setRemoteWorkspaceSyncStatus(event.targetId, {
-        phase: 'pulling',
-        direction: 'pull',
-        revision: event.snapshot.revision,
-        message: 'Applying remote workspace update'
+      void applyRemoteWorkspaceSnapshot(
+        event.targetId,
+        event.snapshot,
+        'Applying remote workspace update'
+      ).catch((err) => {
+        useAppStore.getState().clearRemoteWorkspaceHydrated(event.targetId)
+        appliedRemoteWorkspaceRevisionByTarget.delete(event.targetId)
+        setRemoteWorkspaceSyncStatus(event.targetId, {
+          phase: 'error',
+          direction: 'pull',
+          revision: event.snapshot.revision,
+          message: err instanceof Error ? err.message : 'Failed to apply remote workspace update'
+        })
       })
-      void hydrateRemoteWorkspaceSnapshot(event.targetId, event.snapshot)
-        .then(() => {
-          useAppStore.getState().markRemoteWorkspaceHydrated(event.targetId)
-          setRemoteWorkspaceSyncStatus(event.targetId, {
-            phase: 'synced',
-            direction: 'pull',
-            revision: event.snapshot.revision,
-            lastSyncedAt: Date.now(),
-            message: 'Workspace synced'
-          })
-        })
-        .catch((err) => {
-          useAppStore.getState().clearRemoteWorkspaceHydrated(event.targetId)
-          setRemoteWorkspaceSyncStatus(event.targetId, {
-            phase: 'error',
-            direction: 'pull',
-            revision: event.snapshot.revision,
-            message: err instanceof Error ? err.message : 'Failed to apply remote workspace update'
-          })
-        })
     })
     if (unsubscribeRemoteWorkspace) {
       unsubs.push(unsubscribeRemoteWorkspace)

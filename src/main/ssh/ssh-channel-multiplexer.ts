@@ -148,10 +148,14 @@ export class SshChannelMultiplexer {
     if (this.disposed) {
       return
     }
-    console.warn(
-      `[ssh-mux] Disposing multiplexer (reason: ${reason})`,
-      new Error('dispose trace').stack
-    )
+    if (reason === 'connection_lost') {
+      console.warn(
+        `[ssh-mux] Disposing multiplexer after connection loss`,
+        new Error('dispose trace').stack
+      )
+    } else {
+      console.debug('[ssh-mux] Disposing multiplexer during shutdown')
+    }
     this.disposed = true
 
     if (this.keepaliveTimer) {

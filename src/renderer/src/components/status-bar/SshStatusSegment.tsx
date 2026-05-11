@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -20,7 +20,9 @@ import {
 import { useAppStore } from '../../store'
 import { STATUS_LABELS, statusColor } from '../settings/SshTargetCard'
 import type { SshConnectionStatus } from '../../../../shared/ssh-types'
+import type { RemoteWorkspaceConnectedClient } from '../../../../shared/remote-workspace-types'
 import type { RemoteWorkspaceSyncStatus } from '@/store/slices/ssh'
+import { devicePresenceName, devicePresenceText, useSshDevicePresence } from './ssh-device-presence'
 
 function isConnecting(status: SshConnectionStatus): boolean {
   return ['connecting', 'deploying-relay', 'reconnecting'].includes(status)
@@ -161,13 +163,15 @@ function TargetRow({
   label,
   status,
   remoteSyncEnabled,
-  syncStatus
+  syncStatus,
+  connectedClients
 }: {
   targetId: string
   label: string
   status: SshConnectionStatus
   remoteSyncEnabled: boolean
   syncStatus: RemoteWorkspaceSyncStatus | undefined
+  connectedClients: RemoteWorkspaceConnectedClient[] | undefined
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false)
 
@@ -194,18 +198,37 @@ function TargetRow({
   }, [targetId])
 
   return (
-    <div className="flex items-center gap-2.5 px-2 py-1.5">
-      <span className={`size-1.5 shrink-0 rounded-full ${statusColor(status)}`} />
+    <div className="flex items-start gap-2.5 px-2 py-1.5">
+      <span className={`mt-1 size-1.5 shrink-0 rounded-full ${statusColor(status)}`} />
       <div className="min-w-0 flex-1">
         <div className="truncate text-[12px] font-medium">{label}</div>
         <div className="text-[10px] text-muted-foreground">{STATUS_LABELS[status]}</div>
         {remoteSyncEnabled && (
-          <div
-            className={`mt-0.5 flex min-w-0 items-center gap-1 text-[10px] ${syncStatusClass(syncStatus)}`}
-          >
-            <SyncStatusIcon status={syncStatus} />
-            <span className="truncate">{syncStatusText(syncStatus, status)}</span>
-          </div>
+          <>
+            <div
+              className={`mt-0.5 flex min-w-0 items-center gap-1 text-[10px] ${syncStatusClass(syncStatus)}`}
+            >
+              <SyncStatusIcon status={syncStatus} />
+              <span className="truncate">{syncStatusText(syncStatus, status)}</span>
+            </div>
+            {status === 'connected' && connectedClients && connectedClients.length > 0 ? (
+              <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
+                {connectedClients.map((client) => (
+                  <div key={client.clientId} className="flex min-w-0 items-start gap-1">
+                    <MonitorSmartphone className="size-3 shrink-0" />
+                    <span className="min-w-0 break-words leading-snug">
+                      {devicePresenceName(client)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground">
+                <MonitorSmartphone className="size-3 shrink-0" />
+                <span className="truncate">{devicePresenceText(connectedClients, status)}</span>
+              </div>
+            )}
+          </>
         )}
       </div>
       {busy ? (
@@ -246,18 +269,40 @@ export function SshStatusSegment({
   )
   const setActiveView = useAppStore((s) => s.setActiveView)
   const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
+  const presenceTargetIdsKey = useMemo(
+    () =>
+      Array.from(sshTargetLabels.keys())
+        .filter((id) => {
+          const status = sshConnectionStates.get(id)?.status ?? 'disconnected'
+          return sshTargetRemoteSyncEnabled.get(id) === true && status === 'connected'
+        })
+        .sort()
+        .join('\n'),
+    [sshConnectionStates, sshTargetLabels, sshTargetRemoteSyncEnabled]
+  )
+  const connectedClientsByTargetId = useSshDevicePresence(presenceTargetIdsKey)
 
-  const targets = Array.from(sshTargetLabels.entries()).map(([id, label]) => {
-    const state = sshConnectionStates.get(id)
-    return {
-      id,
-      label,
-      status: (state?.status ?? 'disconnected') as SshConnectionStatus,
-      remoteSyncEnabled: sshTargetRemoteSyncEnabled.get(id) === true,
-      syncStatus: remoteWorkspaceSyncStatusByTargetId[id]
-    }
-  })
-
+  const targets = useMemo(
+    () =>
+      Array.from(sshTargetLabels.entries()).map(([id, label]) => {
+        const state = sshConnectionStates.get(id)
+        return {
+          id,
+          label,
+          status: (state?.status ?? 'disconnected') as SshConnectionStatus,
+          remoteSyncEnabled: sshTargetRemoteSyncEnabled.get(id) === true,
+          syncStatus: remoteWorkspaceSyncStatusByTargetId[id],
+          connectedClients: connectedClientsByTargetId[id]
+        }
+      }),
+    [
+      connectedClientsByTargetId,
+      remoteWorkspaceSyncStatusByTargetId,
+      sshConnectionStates,
+      sshTargetLabels,
+      sshTargetRemoteSyncEnabled
+    ]
+  )
   if (targets.length === 0) {
     return null
   }
@@ -322,6 +367,7 @@ export function SshStatusSegment({
             status={t.status}
             remoteSyncEnabled={t.remoteSyncEnabled}
             syncStatus={t.syncStatus}
+            connectedClients={t.connectedClients}
           />
         ))}
         <DropdownMenuSeparator />

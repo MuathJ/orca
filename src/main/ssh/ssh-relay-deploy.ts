@@ -171,7 +171,7 @@ async function uploadRelay(
   const localRelayDir = getLocalRelayPath(platform)
   if (!localRelayDir || !existsSync(localRelayDir)) {
     throw new Error(
-      `Relay package for ${platform} not found at ${localRelayDir}. ` +
+      `Relay package for ${platform} not found. Searched: ${getLocalRelayCandidates(platform).join(', ')}. ` +
         `This may be a packaging issue — try reinstalling Orca.`
     )
   }
@@ -251,26 +251,34 @@ async function installNativeDeps(conn: SshConnection, remoteDir: string): Promis
 }
 
 function getLocalRelayPath(platform: RelayPlatform): string | null {
-  if (process.env.ORCA_RELAY_PATH) {
-    const override = join(process.env.ORCA_RELAY_PATH, platform)
-    if (existsSync(override)) {
-      return override
+  for (const candidate of getLocalRelayCandidates(platform)) {
+    if (existsSync(candidate)) {
+      return candidate
     }
   }
-
-  // Production: bundled alongside the app
-  const prodPath = join(app.getAppPath(), 'resources', 'relay', platform)
-  if (existsSync(prodPath)) {
-    return prodPath
-  }
-
-  // Development: built by `pnpm build:relay` into out/relay/{platform}/
-  const devPath = join(app.getAppPath(), 'out', 'relay', platform)
-  if (existsSync(devPath)) {
-    return devPath
-  }
-
   return null
+}
+
+function getLocalRelayCandidates(platform: RelayPlatform): string[] {
+  const candidates: string[] = []
+  if (process.env.ORCA_RELAY_PATH) {
+    candidates.push(join(process.env.ORCA_RELAY_PATH, platform))
+  }
+
+  // Why: packaged Electron apps expose copied extraResources through
+  // process.resourcesPath, while app.getAppPath() points at app.asar.
+  if (process.resourcesPath) {
+    candidates.push(join(process.resourcesPath, 'relay', platform))
+    candidates.push(join(process.resourcesPath, 'app.asar.unpacked', 'out', 'relay', platform))
+  }
+
+  const appPath = app.getAppPath()
+  candidates.push(
+    join(appPath, 'resources', 'relay', platform),
+    join(appPath, 'out', 'relay', platform)
+  )
+
+  return [...new Set(candidates)]
 }
 
 async function launchRelay(
