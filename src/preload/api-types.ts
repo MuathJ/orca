@@ -49,11 +49,13 @@ import type {
   NotificationSoundResult,
   OnboardingState,
   OrcaHooks,
+  PathSource,
   PersistedUIState,
   PRCheckDetail,
   PRComment,
   PRInfo,
   Repo,
+  ShellHydrationFailureReason,
   SparsePreset,
   SearchOptions,
   SearchResult,
@@ -256,6 +258,15 @@ export type RefreshAgentsResult = {
   agents: string[]
   addedPathSegments: string[]
   shellHydrationOk: boolean
+  /** Why: drives the agent_picks `on_path:false` triage in dashboard 1562016
+   *  (insight A). `'shell_hydrate'` = detection saw the user's full shell PATH;
+   *  `'sync_seed_only'` = hydration failed and detection ran against the
+   *  seed list from `patchPackagedProcessPath`. */
+  pathSource: PathSource
+  /** Why: classified hydration outcome. `'none'` on success; one of the failure
+   *  modes when `shellHydrationOk` is false. Typed off the shared alias so
+   *  schema/main/preload/renderer stay in lockstep. */
+  pathFailureReason: ShellHydrationFailureReason
 }
 
 export type PreflightApi = {
@@ -603,6 +614,12 @@ export type PreloadApi = {
       repoPath: string
       number: number
       body: string
+      /** Why: GitHub stores PR conversation comments under `/issues/N/comments`
+       *  too, so the IPC and `gh` call paths are identical. The renderer cache
+       *  key is keyed by the drawer's `type`, so callers pass it through to
+       *  scope the cross-window invalidation broadcast correctly and avoid
+       *  evicting an unrelated PR/issue that happens to share the number. */
+      type?: 'issue' | 'pr'
     }) => Promise<GitHubCommentResult>
     addPRReviewCommentReply: (args: {
       repoPath: string
@@ -616,6 +633,14 @@ export type PreloadApi = {
     addPRReviewComment: (args: GitHubPRReviewCommentInput) => Promise<GitHubCommentResult>
     listLabels: (args: { repoPath: string }) => Promise<string[]>
     listAssignableUsers: (args: { repoPath: string }) => Promise<GitHubAssignableUser[]>
+    /**
+     * Subscribe to local-mutation broadcasts. Used by the work-item-drawer
+     * cache to invalidate entries across windows after a successful mutation.
+     * Returns an unsubscribe function.
+     */
+    onWorkItemMutated: (
+      callback: (payload: { repoPath: string; type: 'issue' | 'pr'; number: number }) => void
+    ) => () => void
     checkOrcaStarred: () => Promise<boolean | null>
     starOrca: () => Promise<boolean>
     /**
@@ -1231,6 +1256,11 @@ export type PreloadApi = {
         paneKey: string
         tabId?: string
         worktreeId?: string
+        // Why: stamped by main from the SshChannelMultiplexer the event
+        // arrived on (or null for local). The renderer uses it to drop
+        // in-flight events when an SSH connection tears down — see
+        // docs/design/agent-status-over-ssh.md §5.
+        connectionId: string | null
         state: AgentStatusState
         prompt?: string
         agentType?: string

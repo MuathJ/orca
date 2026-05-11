@@ -7,6 +7,21 @@ import type { GitHubProjectSettings } from './github-project-types'
 // `WorkspaceCreateTelemetrySource` from '../../../shared/types'.
 export type { WorkspaceSource as WorkspaceCreateTelemetrySource } from './telemetry-events'
 
+// ─── Shell PATH hydration ────────────────────────────────────────────
+// Why: shared so the main-side `HydrationResult` discriminator and the
+// telemetry schema in `telemetry-events.ts` stay in lockstep without
+// `src/shared/` taking a forbidden import from `src/main/`. A compile-time
+// guard in telemetry-events.ts asserts the schema enum matches this alias —
+// adding a new failure mode without updating both places fails the build.
+export type ShellHydrationFailureReason =
+  | 'none'
+  | 'no_shell'
+  | 'timeout'
+  | 'spawn_error'
+  | 'empty_path'
+
+export type PathSource = 'shell_hydrate' | 'sync_seed_only'
+
 // ─── Repo ────────────────────────────────────────────────────────────
 export type RepoKind = 'git' | 'folder'
 
@@ -1179,9 +1194,9 @@ export type GlobalSettings = {
   promptCacheTtlMs: number
   /** Why: Codex rate-limit account routing is a durable app preference owned by
    *  the main process, not transient UI state. Persisting the selected managed
-   *  homes here lets Orca resolve the correct `CODEX_HOME` before the renderer
-   *  hydrates, while keeping this scope explicitly separate from Codex usage
-   *  analytics and external terminal sessions. */
+   *  auth here lets Orca prepare shared ~/.codex before the renderer hydrates,
+   *  while keeping this scope explicitly separate from Codex usage analytics
+   *  and external terminal sessions. */
   codexManagedAccounts: CodexManagedAccount[]
   activeCodexManagedAccountId: string | null
   /** Why: Claude Code keeps conversations under one shared config root. Orca

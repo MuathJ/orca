@@ -685,7 +685,13 @@ export function createMainWindow(
     ipcMain.removeHandler(isMaximizedChannel)
     ipcMain.removeListener(confirmCloseChannel, onConfirmClose)
     ipcMain.removeListener(markdownFocusChannel, onMarkdownEditorFocused)
-    if (!windowWebContents.isDestroyed()) {
+    // Why: on updater-triggered shutdown, BrowserWindow can emit `closed`
+    // after its webContents has already been destroyed. The destroyed
+    // webContents owns its listeners; use the captured reference and guard it
+    // so the quit path cannot crash before Squirrel.Mac relaunches Orca.
+    const webContentsDestroyed =
+      typeof windowWebContents.isDestroyed === 'function' && windowWebContents.isDestroyed()
+    if (!webContentsDestroyed && typeof windowWebContents.removeListener === 'function') {
       windowWebContents.removeListener('context-menu', onMainContextMenu)
     }
     app.removeListener('before-quit', freezeBoundsOnQuit)

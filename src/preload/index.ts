@@ -72,6 +72,7 @@ import type {
 } from '../shared/ssh-types'
 import type { AgentStatusState } from '../shared/agent-status-types'
 import type { TelemetryConsentState } from '../shared/telemetry-consent-types'
+import type { RefreshAgentsResult } from './api-types'
 import type { AgentKind, LaunchSource, RequestKind } from '../shared/telemetry-events'
 import {
   ORCA_EDITOR_SAVE_DIRTY_FILES_EVENT,
@@ -677,6 +678,7 @@ const api = {
       repoPath: string
       number: number
       body: string
+      type?: 'issue' | 'pr'
     }): Promise<GitHubCommentResult> => ipcRenderer.invoke('gh:addIssueComment', args),
 
     addPRReviewCommentReply: (args: {
@@ -704,6 +706,21 @@ const api = {
 
     listAssignableUsers: (args: { repoPath: string }): Promise<GitHubAssignableUser[]> =>
       ipcRenderer.invoke('gh:listAssignableUsers', args),
+
+    // Why: every renderer subscribes to local mutation broadcasts so each
+    // window's work-item-details cache invalidates the affected entry. The
+    // event fires after a successful mutation in any window — see
+    // src/main/ipc/github.ts broadcastWorkItemMutated.
+    onWorkItemMutated: (
+      callback: (payload: { repoPath: string; type: 'issue' | 'pr'; number: number }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { repoPath: string; type: 'issue' | 'pr'; number: number }
+      ): void => callback(payload)
+      ipcRenderer.on('gh:workItemMutated', listener)
+      return () => ipcRenderer.removeListener('gh:workItemMutated', listener)
+    },
 
     checkOrcaStarred: (): Promise<boolean | null> => ipcRenderer.invoke('gh:checkOrcaStarred'),
     starOrca: (): Promise<boolean> => ipcRenderer.invoke('gh:starOrca'),
@@ -925,11 +942,8 @@ const api = {
       linear: { connected: boolean }
     }> => ipcRenderer.invoke('preflight:check', args),
     detectAgents: (): Promise<string[]> => ipcRenderer.invoke('preflight:detectAgents'),
-    refreshAgents: (): Promise<{
-      agents: string[]
-      addedPathSegments: string[]
-      shellHydrationOk: boolean
-    }> => ipcRenderer.invoke('preflight:refreshAgents'),
+    refreshAgents: (): Promise<RefreshAgentsResult> =>
+      ipcRenderer.invoke('preflight:refreshAgents'),
     detectRemoteAgents: (args: { connectionId: string }): Promise<string[]> =>
       ipcRenderer.invoke('preflight:detectRemoteAgents', args)
   },
@@ -2309,6 +2323,11 @@ const api = {
         paneKey: string
         tabId?: string
         worktreeId?: string
+        // Why: stamped by main from the SshChannelMultiplexer the event
+        // arrived on (or null for local). The renderer uses it to drop
+        // in-flight events when an SSH connection tears down — see
+        // docs/design/agent-status-over-ssh.md §5.
+        connectionId: string | null
         state: AgentStatusState
         prompt?: string
         agentType?: string
@@ -2324,6 +2343,7 @@ const api = {
           paneKey: string
           tabId?: string
           worktreeId?: string
+          connectionId: string | null
           state: AgentStatusState
           prompt?: string
           agentType?: string
