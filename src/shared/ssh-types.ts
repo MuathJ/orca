@@ -20,6 +20,10 @@ export type SshTarget = {
   /** Opt in to remote-host-owned workspace/session state for this SSH target.
    *  Classic SSH remains local-session-backed when this is false/absent. */
   remoteWorkspaceSyncEnabled?: boolean
+  /** Remote workspace sync relay grace period in seconds.
+   *  Only applies when remoteWorkspaceSyncEnabled is true. 0 disables expiry.
+   *  Default: 0. */
+  remoteWorkspaceSyncGracePeriodSeconds?: number
   /** Set to true after a successful connection that triggered a credential
    *  prompt (passphrase or password). Persisted so startup reconnect can
    *  partition targets into eager (no passphrase) vs deferred (passphrase)

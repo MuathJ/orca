@@ -144,7 +144,9 @@ export function sshConfigHostsToTargets(
       username: entry.user ?? '',
       identityFile: entry.identityFile,
       proxyCommand: entry.proxyCommand,
-      jumpHost: entry.proxyJump
+      jumpHost: entry.proxyJump,
+      remoteWorkspaceSyncEnabled: true,
+      remoteWorkspaceSyncGracePeriodSeconds: 0
     })
   }
 

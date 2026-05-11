@@ -18,6 +18,7 @@ type OrphanTerminalCleanupState = Pick<
   | 'pendingIssueCommandSplitByTabId'
   | 'tabBarOrderByWorktree'
   | 'cacheTimerByKey'
+  | 'agentResumeBindingsByPaneKey'
   | 'activeTabIdByWorktree'
   | 'activeTabId'
 >
@@ -63,6 +64,7 @@ export function buildOrphanTerminalCleanupPatch(
   | 'pendingIssueCommandSplitByTabId'
   | 'tabBarOrderByWorktree'
   | 'cacheTimerByKey'
+  | 'agentResumeBindingsByPaneKey'
   | 'activeTabIdByWorktree'
   | 'activeTabId'
 > {
@@ -84,6 +86,7 @@ export function buildOrphanTerminalCleanupPatch(
     )
   }
   const nextCacheTimerByKey = { ...state.cacheTimerByKey }
+  const nextAgentResumeBindingsByPaneKey = { ...state.agentResumeBindingsByPaneKey }
 
   // Why: orphan runtime terminals no longer have a backing unified tab or live
   // PTY, so every per-tab cache keyed off that runtime ID must disappear with
@@ -101,6 +104,11 @@ export function buildOrphanTerminalCleanupPatch(
     for (const key of Object.keys(nextCacheTimerByKey)) {
       if (key.startsWith(`${orphanTabId}:`)) {
         delete nextCacheTimerByKey[key]
+      }
+    }
+    for (const key of Object.keys(nextAgentResumeBindingsByPaneKey)) {
+      if (key.startsWith(`${orphanTabId}:`)) {
+        delete nextAgentResumeBindingsByPaneKey[key]
       }
     }
   }
@@ -127,6 +135,7 @@ export function buildOrphanTerminalCleanupPatch(
     pendingIssueCommandSplitByTabId: nextPendingIssueCommandSplitByTabId,
     tabBarOrderByWorktree: nextTabBarOrderByWorktree,
     cacheTimerByKey: nextCacheTimerByKey,
+    agentResumeBindingsByPaneKey: nextAgentResumeBindingsByPaneKey,
     activeTabIdByWorktree: nextActiveTabIdByWorktree,
     activeTabId:
       state.activeTabId && orphanTerminalIds.has(state.activeTabId) ? null : state.activeTabId

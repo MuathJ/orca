@@ -318,6 +318,51 @@ function readString(record: Record<string, unknown>, key: string): string | unde
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i)
+    if (code <= 0x1f || code === 0x7f) {
+      return true
+    }
+  }
+  return false
+}
+
+function normalizeAgentSessionId(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const trimmed = value.trim()
+  // Why: session ids are persisted and later shell-quoted into resume commands.
+  // Reject control characters up front so a malformed hook payload cannot
+  // smuggle terminal control bytes into the resume path.
+  if (!trimmed || trimmed.length > 200 || hasControlCharacter(trimmed)) {
+    return undefined
+  }
+  return trimmed
+}
+
+function extractAgentSessionId(
+  source: AgentHookSource,
+  eventName: unknown,
+  hookPayload: Record<string, unknown>
+): string | undefined {
+  const direct =
+    normalizeAgentSessionId(hookPayload.session_id) ??
+    normalizeAgentSessionId(hookPayload.sessionId) ??
+    normalizeAgentSessionId(hookPayload.sessionID)
+  if (direct) {
+    return direct
+  }
+  // Why: Codex's persisted session metadata names the conversation id `id`.
+  // Only accept that ambiguous field on SessionStart; tool events may also
+  // carry ids for unrelated objects.
+  if (source === 'codex' && eventName === 'SessionStart') {
+    return normalizeAgentSessionId(hookPayload.id)
+  }
+  return undefined
+}
+
 // Why: Claude `tool_response` can be a string, or an object with a `content`
 // array shaped like `[{type: 'text', text: '...'}]`. Surface the first text
 // block so PostToolUse for Task/Agent subagents carries something useful into
@@ -799,6 +844,7 @@ function normalizeClaudeEvent(
       toolName: snapshot.toolName,
       toolInput: snapshot.toolInput,
       lastAssistantMessage: snapshot.lastAssistantMessage,
+      agentSessionId: extractAgentSessionId('claude', eventName, hookPayload),
       interrupted
     })
   )
@@ -886,7 +932,8 @@ function normalizeCodexEvent(
       agentType: 'codex',
       toolName: snapshot.toolName,
       toolInput: snapshot.toolInput,
-      lastAssistantMessage: snapshot.lastAssistantMessage
+      lastAssistantMessage: snapshot.lastAssistantMessage,
+      agentSessionId: extractAgentSessionId('codex', eventName, hookPayload)
     })
   )
 }

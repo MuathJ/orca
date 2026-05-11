@@ -20,8 +20,14 @@ import {
 } from './layout-serialization'
 import { warnTerminalLifecycleAnomaly } from './terminal-lifecycle-diagnostics'
 import { registerPtySerializer, registerPtyTitleSource } from './pty-buffer-serializer'
+import { buildAgentResumeCommand } from '@/lib/agent-resume-command'
+import type { AgentResumeBinding } from '../../../../shared/types'
 
 const pendingSpawnByPaneKey = new Map<string, Promise<string | null>>()
+const SSH_PROVIDER_READY_RETRY_MS = 250
+const SSH_PROVIDER_READY_MAX_ATTEMPTS = 40
+const SSH_PROVIDER_UNAVAILABLE_MESSAGE =
+  'SSH connection is not active. Use the reconnect dialog or Settings to connect.'
 
 // Why: when multiple panes/tabs need the same deferred SSH connection,
 // the first one calls ssh.connect() and subsequent ones must wait for it
@@ -61,6 +67,18 @@ async function waitForSshConnection(connectionId: string): Promise<SshConnectRes
   return promise
 }
 
+function isSshProviderUnavailableMessage(message: string | null): boolean {
+  return (
+    !!message &&
+    (message.includes('No PTY provider for connection') ||
+      message.includes(SSH_PROVIDER_UNAVAILABLE_MESSAGE))
+  )
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function isCodexPaneStale(args: { tabId: string; panePtyId: string | null }): boolean {
   const state = useAppStore.getState()
   const { codexRestartNoticeByPtyId } = state
@@ -86,6 +104,19 @@ function isSessionOwnedByWorktree(sessionId: string, worktreeId: string): boolea
     return true
   }
   return sessionId.slice(0, separatorIdx) === worktreeId
+}
+
+function getAgentResumeBindingForPane(tabId: string, paneKey: string): AgentResumeBinding | null {
+  const bindings = useAppStore.getState().agentResumeBindingsByPaneKey ?? {}
+  const exact = bindings[paneKey]
+  if (exact) {
+    return exact
+  }
+  const tabBindings = Object.entries(bindings).filter(([key]) => key.startsWith(`${tabId}:`))
+  // Why: old layouts can remint pane ids during recovery. Falling back is safe
+  // only when the tab had exactly one known agent session; split-pane tabs need
+  // exact paneKey matching to avoid resuming the wrong provider thread.
+  return tabBindings.length === 1 ? tabBindings[0][1] : null
 }
 
 export function connectPanePty(
@@ -126,7 +157,9 @@ export function connectPanePty(
     deps.setCacheTimerStartedAt(cacheKey, null)
     // Why: a dead terminal has no running agent — remove its explicit status
     // entry so the hover UI only shows what is running *now*.
-    useAppStore.getState().removeAgentStatus(cacheKey)
+    const store = useAppStore.getState()
+    store.removeAgentStatus(cacheKey)
+    store.removeAgentResumeBinding(cacheKey)
     // The runtime graph is the CLI's source for live terminal bindings, so
     // we must republish when a pane loses its PTY instead of waiting for a
     // broader layout change that may never happen.
@@ -275,7 +308,9 @@ export function connectPanePty(
     // heuristic with authoritative foreground-process tracking in main so the
     // row drops within 2s of the CLI process exiting. See branch
     // brennanb2025/foreground-process-agent-exit.
-    useAppStore.getState().removeAgentStatus(cacheKey)
+    const store = useAppStore.getState()
+    store.removeAgentStatus(cacheKey)
+    store.removeAgentResumeBinding(cacheKey)
   }
   // Why: inject ORCA_PANE_KEY so global Claude/Codex hooks can attribute their
   // callbacks to the correct Orca pane without resolving worktrees from cwd.
@@ -332,6 +367,16 @@ export function connectPanePty(
       const currentState = useAppStore.getState()
       const title = currentState.runtimePaneTitlesByTabId?.[deps.tabId]?.[pane.id]
       currentState.setAgentStatus(cacheKey, payload, title)
+      const resumeProvider =
+        payload.agentType === 'claude' ? 'claude' : payload.agentType === 'codex' ? 'codex' : null
+      if (resumeProvider && payload.agentSessionId) {
+        currentState.setAgentResumeBinding(cacheKey, {
+          provider: resumeProvider,
+          sessionId: payload.agentSessionId,
+          cwd: deps.cwd ?? null,
+          updatedAt: Date.now()
+        })
+      }
     }
   })
   const hasExistingPaneTransport = deps.paneTransportsRef.current.size > 0
@@ -708,10 +753,25 @@ export function connectPanePty(
         window.api.pty.ackColdRestore(ptyId)
       }
       if (connectResult?.sessionExpired) {
-        toast.info('Previous SSH session expired.', {
-          id: `ssh-session-expired-${deps.tabId}`,
-          description: 'Started a new shell.'
-        })
+        const resumeBinding = getAgentResumeBindingForPane(deps.tabId, cacheKey)
+        const resumeCommand = resumeBinding ? buildAgentResumeCommand(resumeBinding) : null
+        if (resumeCommand && resumeBinding) {
+          const binding = resumeBinding
+          toast.info('Previous SSH session expired.', {
+            id: `ssh-session-expired-${deps.tabId}`,
+            description: `Resuming ${binding.provider === 'claude' ? 'Claude' : 'Codex'} session.`
+          })
+          setTimeout(() => {
+            if (!disposed) {
+              transport.sendInput(`${resumeCommand}\r`)
+            }
+          }, 150)
+        } else {
+          toast.info('Previous SSH session expired.', {
+            id: `ssh-session-expired-${deps.tabId}`,
+            description: 'Started a new shell.'
+          })
+        }
       }
 
       // Why: when a mobile-fit override is active, skip sending desktop dims
@@ -728,6 +788,91 @@ export function connectPanePty(
       scheduleRuntimeGraphSync()
     }
 
+    type RestoredSshSessionAttempt =
+      | {
+          kind: 'result'
+          result: PtyConnectResult | string | void
+          preSignalGen: number | null
+        }
+      | { kind: 'provider-unavailable'; message: string }
+
+    const attemptRestoredSshSession = async (
+      sessionId: string
+    ): Promise<RestoredSshSessionAttempt> => {
+      let lastUnavailableMessage = SSH_PROVIDER_UNAVAILABLE_MESSAGE
+      for (let attempt = 0; attempt < SSH_PROVIDER_READY_MAX_ATTEMPTS; attempt++) {
+        const preSignalPromise = window.api.pty
+          .declarePendingPaneSerializer(cacheKey)
+          .catch(() => null)
+        let callbackError: string | null = null
+        let result: PtyConnectResult | string | void
+        try {
+          result = await transport.connect({
+            url: '',
+            cols,
+            rows,
+            sessionId,
+            // Why: this path already owns a bounded 40x250ms provider retry.
+            // Main's 10s wait per pty:spawn would multiply into minutes when
+            // a restored SSH target is offline.
+            waitForProviderRegistration: false,
+            callbacks: {
+              onData: dataCallback,
+              onReplayData: replayDataCallback,
+              onError: (message) => {
+                callbackError = message
+                if (!isSshProviderUnavailableMessage(message)) {
+                  reportError(message)
+                }
+              }
+            }
+          })
+        } catch (err) {
+          callbackError = err instanceof Error ? err.message : String(err)
+          result = undefined
+        }
+
+        const gen = await preSignalPromise
+        if (disposed) {
+          if (typeof gen === 'number') {
+            void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
+          }
+          return { kind: 'provider-unavailable', message: lastUnavailableMessage }
+        }
+
+        if (result) {
+          return {
+            kind: 'result',
+            result,
+            preSignalGen: typeof gen === 'number' ? gen : null
+          }
+        }
+
+        if (isSshProviderUnavailableMessage(callbackError)) {
+          lastUnavailableMessage = callbackError ?? SSH_PROVIDER_UNAVAILABLE_MESSAGE
+          if (typeof gen === 'number') {
+            void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
+          }
+          if (attempt < SSH_PROVIDER_READY_MAX_ATTEMPTS - 1) {
+            await delay(SSH_PROVIDER_READY_RETRY_MS)
+            if (disposed) {
+              return { kind: 'provider-unavailable', message: lastUnavailableMessage }
+            }
+            continue
+          }
+          return { kind: 'provider-unavailable', message: lastUnavailableMessage }
+        }
+
+        return {
+          kind: 'result',
+          result,
+          preSignalGen: typeof gen === 'number' ? gen : null
+        }
+      }
+
+      return { kind: 'provider-unavailable', message: lastUnavailableMessage }
+    }
+
     // Why: if this tab has a deferred SSH session ID, trigger the SSH
     // connection now that the user has focused the tab. We check per-tab
     // (not per-target) because multiple tabs for the same target each need
@@ -742,10 +887,9 @@ export function connectPanePty(
       const pendingSessionId =
         restoredLeafSessionId ?? storeState.deferredSshSessionIdsByTabId[deps.tabId]
       const isDeferredTarget = storeState.deferredSshReconnectTargets.includes(connectionId)
-      console.warn(
-        `[pty-connection] SSH tab=${deps.tabId} connectionId=${connectionId} pendingSessionId=${pendingSessionId} isDeferredTarget=${isDeferredTarget}`
-      )
-      if (pendingSessionId || isDeferredTarget) {
+      const sshStatus = storeState.sshConnectionStates.get(connectionId)?.status
+      const shouldGateSshStartup = pendingSessionId || isDeferredTarget || sshStatus !== 'connected'
+      if (shouldGateSshStartup) {
         void (async () => {
           // Why: if the target requires a passphrase/password and no credential
           // is cached yet, auto-firing ssh.connect would surprise the user —
@@ -870,65 +1014,29 @@ export function connectPanePty(
           if (disposed) {
             return
           }
-          useAppStore.getState().removeDeferredSshReconnectTarget(connectionId)
-          if (disposed) {
-            return
-          }
           if (pendingSessionId) {
-            console.warn(
-              `[pty-connection] Attempting reattach for tab=${deps.tabId} sessionId=${pendingSessionId}`
-            )
-            // Why: the saved remote PTY ID is single-use restore metadata.
-            // Clear it before attach/fallback so remounts don't keep retrying
-            // an expired session after a fresh shell has been created.
+            // Why: the SSH relay can report "connected" before the renderer's
+            // first restored pane reaches pty:spawn. If provider registration
+            // is still catching up, retry and keep the saved session id instead
+            // of consuming it and replacing a live Claude/Codex PTY with a shell.
+            const outcome = await attemptRestoredSshSession(pendingSessionId)
+            if (disposed) {
+              return
+            }
+            if (outcome.kind === 'provider-unavailable') {
+              reportError(outcome.message)
+              return
+            }
+            useAppStore.getState().removeDeferredSshReconnectTarget(connectionId)
             useAppStore.getState().removeDeferredSshSessionId(deps.tabId)
-            // Why: pre-signal also for SSH-deferred reattach so the
-            // cooperation gate uniformly applies to remote sessions. Issue
-            // declare and connect back-to-back; Electron preserves order. See
-            // docs/mobile-prefer-renderer-scrollback.md.
-            const preSignalPromise = window.api.pty
-              .declarePendingPaneSerializer(cacheKey)
-              .catch(() => null)
-            const reattachPromise = transport.connect({
-              url: '',
-              cols,
-              rows,
-              sessionId: pendingSessionId,
-              callbacks: {
-                onData: dataCallback,
-                onReplayData: replayDataCallback,
-                onError: reportError
-              }
-            })
-            void Promise.resolve(reattachPromise)
-              .then(async (result) => {
-                console.warn(
-                  `[pty-connection] Reattach result for tab=${deps.tabId}:`,
-                  result
-                    ? {
-                        sessionExpired: (result as Record<string, unknown>).sessionExpired,
-                        replay: !!(result as Record<string, unknown>).replay
-                      }
-                    : 'undefined'
-                )
-                handleReattachResult(result, pendingSessionId)
-                const gen = await preSignalPromise
-                if (typeof gen === 'number') {
-                  void window.api.pty.settlePaneSerializer(cacheKey, gen).catch(() => {})
-                }
-              })
-              .catch(async (err) => {
-                const gen = await preSignalPromise
-                if (typeof gen === 'number') {
-                  void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
-                }
-                console.warn(`[pty-connection] Reattach FAILED for tab=${deps.tabId}:`, err)
-                if (disposed) {
-                  return
-                }
-                startFreshSpawn()
-              })
+            handleReattachResult(outcome.result, pendingSessionId)
+            if (typeof outcome.preSignalGen === 'number') {
+              void window.api.pty
+                .settlePaneSerializer(cacheKey, outcome.preSignalGen)
+                .catch(() => {})
+            }
           } else {
+            useAppStore.getState().removeDeferredSshReconnectTarget(connectionId)
             startFreshSpawn()
           }
         })()

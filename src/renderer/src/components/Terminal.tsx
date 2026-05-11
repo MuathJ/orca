@@ -1431,7 +1431,8 @@ function Terminal(): React.JSX.Element | null {
             <DialogTitle className="text-sm">Close Window?</DialogTitle>
             <DialogDescription className="text-xs">
               There are terminals with running processes. If you close the window, those processes
-              will be killed.
+              will be killed. SSH terminals will stay alive or expire based on their configured
+              grace period.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">

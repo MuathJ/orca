@@ -14,6 +14,7 @@ export type EditingTarget = {
   jumpHost: string
   relayGracePeriodSeconds: string
   remoteWorkspaceSyncEnabled: boolean
+  remoteWorkspaceSyncGracePeriodSeconds: string
 }
 
 export const EMPTY_FORM: EditingTarget = {
@@ -26,7 +27,8 @@ export const EMPTY_FORM: EditingTarget = {
   proxyCommand: '',
   jumpHost: '',
   relayGracePeriodSeconds: '300',
-  remoteWorkspaceSyncEnabled: false
+  remoteWorkspaceSyncEnabled: true,
+  remoteWorkspaceSyncGracePeriodSeconds: '0'
 }
 
 type SshTargetFormProps = {
@@ -142,34 +144,58 @@ export function SshTargetForm({
             How long the relay keeps terminals alive after disconnect. Default: 300 (5 minutes).
           </p>
         </div>
-        <div className="col-span-2 flex items-start gap-3 rounded-md border border-border/50 bg-muted/20 p-3">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={form.remoteWorkspaceSyncEnabled}
-            onClick={() =>
-              onFormChange((f) => ({
-                ...f,
-                remoteWorkspaceSyncEnabled: !f.remoteWorkspaceSyncEnabled
-              }))
-            }
-            className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
-              form.remoteWorkspaceSyncEnabled ? 'bg-foreground' : 'bg-muted-foreground/30'
-            }`}
-          >
-            <span
-              className={`pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform ${
-                form.remoteWorkspaceSyncEnabled ? 'translate-x-4' : 'translate-x-0.5'
+        <div className="col-span-2 rounded-md border border-border/50 bg-muted/20 p-3">
+          <div className="flex items-start gap-3">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.remoteWorkspaceSyncEnabled}
+              onClick={() =>
+                onFormChange((f) => ({
+                  ...f,
+                  remoteWorkspaceSyncEnabled: !f.remoteWorkspaceSyncEnabled
+                }))
+              }
+              className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
+                form.remoteWorkspaceSyncEnabled ? 'bg-foreground' : 'bg-muted-foreground/30'
               }`}
-            />
-          </button>
-          <span className="space-y-1">
-            <span className="block text-sm font-medium">Synced remote workspace</span>
-            <span className="block text-[11px] text-muted-foreground">
-              Store SSH workspace tabs and terminal bindings on the remote relay so other Orca
-              clients connecting to this target can restore the same view.
+            >
+              <span
+                className={`pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform ${
+                  form.remoteWorkspaceSyncEnabled ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+            <span className="space-y-1">
+              <span className="block text-sm font-medium">Sync remote workspace</span>
+              <span className="block text-[11px] text-muted-foreground">
+                Store SSH workspace tabs and terminal bindings on the remote relay so other Orca
+                clients connecting to this target can restore the same view.
+              </span>
             </span>
-          </span>
+          </div>
+          {form.remoteWorkspaceSyncEnabled && (
+            <div className="mt-3 space-y-1.5 pl-12">
+              <Label>Remote Workspace Grace Period (seconds)</Label>
+              <Input
+                type="number"
+                value={form.remoteWorkspaceSyncGracePeriodSeconds}
+                onChange={(e) =>
+                  onFormChange((f) => ({
+                    ...f,
+                    remoteWorkspaceSyncGracePeriodSeconds: e.target.value
+                  }))
+                }
+                placeholder="0"
+                min={0}
+                max={3600}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                How long synced remote workspace terminals stay alive after all clients disconnect.
+                Use 0 to keep them running.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

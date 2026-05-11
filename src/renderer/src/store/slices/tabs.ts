@@ -26,7 +26,7 @@ import {
   updateGroup
 } from './tab-group-state'
 import { buildHydratedTabState } from './tabs-hydration'
-import { buildOrphanTerminalCleanupPatch, getOrphanTerminalIds } from './terminal-orphan-helpers'
+import { buildOrphanTerminalCleanupPatch, getOrphanTerminalIds } from './terminal-orphan-cleanup'
 
 export type TabSplitDirection = 'left' | 'right' | 'up' | 'down'
 

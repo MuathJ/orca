@@ -53,8 +53,12 @@ import { registerFilesystemMutationHandlers } from './filesystem-mutations'
 import { searchWithGitGrep } from './filesystem-search-git'
 import { listMarkdownDocuments, markdownDocumentsFromRelativePaths } from './markdown-documents'
 import { checkRgAvailable } from './rg-availability'
-import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
-import { getSshGitProvider } from '../providers/ssh-git-dispatch'
+import {
+  getSshFilesystemProvider,
+  waitForSshFilesystemProvider
+} from '../providers/ssh-filesystem-dispatch'
+import { getSshGitProvider, waitForSshGitProvider } from '../providers/ssh-git-dispatch'
+import { getSshConnectionManager } from './ssh'
 
 // Why: Monaco has large-file optimizations like VS Code; blocking at 5MB makes
 // ordinary JSON/log files inaccessible before the editor can degrade features.
@@ -78,6 +82,18 @@ const PREVIEWABLE_BINARY_MIME_TYPES: Record<string, string> = {
   '.bmp': 'image/bmp',
   '.ico': 'image/x-icon',
   '.pdf': 'application/pdf'
+}
+
+function shouldWaitForSshProvider(connectionId: string): boolean {
+  // Why: provider waits are useful during connect/relay startup, but offline
+  // polling runs every few seconds and must fail fast.
+  const status = getSshConnectionManager()?.getState(connectionId)?.status
+  return (
+    status === 'connecting' ||
+    status === 'deploying-relay' ||
+    status === 'connected' ||
+    status === 'reconnecting'
+  )
 }
 
 /**
@@ -112,7 +128,14 @@ export function registerFilesystemHandlers(store: Store): void {
     'fs:readDir',
     async (_event, args: { dirPath: string; connectionId?: string }): Promise<DirEntry[]> => {
       if (args.connectionId) {
-        const provider = getSshFilesystemProvider(args.connectionId)
+        // Why: startup can restore file-explorer views before ssh:connect has
+        // finished registering relay providers. Wait only during active
+        // connection setup so offline file-tree refreshes fail fast.
+        const provider =
+          getSshFilesystemProvider(args.connectionId) ??
+          (shouldWaitForSshProvider(args.connectionId)
+            ? await waitForSshFilesystemProvider(args.connectionId)
+            : null)
         if (!provider) {
           throw new Error(`No filesystem provider for connection "${args.connectionId}"`)
         }
@@ -445,7 +468,14 @@ export function registerFilesystemHandlers(store: Store): void {
       args: { worktreePath: string; connectionId?: string }
     ): Promise<GitStatusResult> => {
       if (args.connectionId) {
-        const provider = getSshGitProvider(args.connectionId)
+        // Why: restored source-control panels can poll before the SSH relay
+        // provider stack is ready. Wait only while the target is actively
+        // connecting so offline status polling fails fast instead of piling up.
+        const provider =
+          getSshGitProvider(args.connectionId) ??
+          (shouldWaitForSshProvider(args.connectionId)
+            ? await waitForSshGitProvider(args.connectionId)
+            : null)
         if (!provider) {
           throw new Error(`No git provider for connection "${args.connectionId}"`)
         }

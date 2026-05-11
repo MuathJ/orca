@@ -981,6 +981,18 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         }
         return changed ? out : obj
       }
+      const omitByPaneTabId = <T>(obj: Record<string, T>): Record<string, T> => {
+        let changed = false
+        const out = { ...obj }
+        for (const key of Object.keys(out)) {
+          const tabId = key.split(':')[0]
+          if (tabId && doomedTabIds.has(tabId)) {
+            delete out[key]
+            changed = true
+          }
+        }
+        return changed ? out : obj
+      }
       const omitByFileId = <T>(obj: Record<string, T>): Record<string, T> => {
         let changed = false
         const out = { ...obj }
@@ -1025,6 +1037,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         terminalLayoutsByTabId: omitByTabId(s.terminalLayoutsByTabId),
         ptyIdsByTabId: omitByTabId(s.ptyIdsByTabId),
         runtimePaneTitlesByTabId: omitByTabId(s.runtimePaneTitlesByTabId),
+        agentResumeBindingsByPaneKey: omitByPaneTabId(s.agentResumeBindingsByPaneKey),
         // Delete state
         deleteStateByWorktreeId: omitByWorktree(s.deleteStateByWorktreeId),
         baseStatusByWorktreeId: omitByWorktree(s.baseStatusByWorktreeId),

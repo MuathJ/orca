@@ -42,6 +42,11 @@ import {
 
 let localProvider: IPtyProvider = new LocalPtyProvider()
 const sshProviders = new Map<string, IPtyProvider>()
+const SSH_PROVIDER_REGISTRATION_WAIT_MS = 10_000
+const sshProviderRegistrationWaiters = new Map<
+  string,
+  Set<(provider: IPtyProvider | null) => void>
+>()
 // Why: PTY IDs are assigned at spawn time with a connectionId, but subsequent
 // write/resize/kill calls only carry the PTY ID. This map lets us route
 // post-spawn operations to the correct provider without the renderer needing
@@ -124,6 +129,53 @@ function getProvider(connectionId: string | null | undefined): IPtyProvider {
     return localProvider
   }
   const provider = sshProviders.get(connectionId)
+  if (!provider) {
+    throw new Error(`No PTY provider for connection "${connectionId}"`)
+  }
+  return provider
+}
+
+async function waitForSshProviderRegistration(connectionId: string): Promise<IPtyProvider | null> {
+  const provider = sshProviders.get(connectionId)
+  if (provider) {
+    return provider
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const resolveOnce = (value: IPtyProvider | null): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      const waiters = sshProviderRegistrationWaiters.get(connectionId)
+      waiters?.delete(resolveOnce)
+      if (waiters?.size === 0) {
+        sshProviderRegistrationWaiters.delete(connectionId)
+      }
+      resolve(value)
+    }
+
+    const timer = setTimeout(() => resolveOnce(null), SSH_PROVIDER_REGISTRATION_WAIT_MS)
+    ;(timer as { unref?: () => void }).unref?.()
+    const waiters = sshProviderRegistrationWaiters.get(connectionId) ?? new Set()
+    waiters.add(resolveOnce)
+    sshProviderRegistrationWaiters.set(connectionId, waiters)
+  })
+}
+
+async function getProviderForSpawn(
+  connectionId: string | null | undefined,
+  waitForRegistration: boolean
+): Promise<IPtyProvider> {
+  if (!connectionId || !waitForRegistration) {
+    return getProvider(connectionId)
+  }
+  // Why: restored SSH panes can invoke pty:spawn with a saved sessionId while
+  // ssh:connect is still registering relay providers. Waiting avoids noisy IPC
+  // failures and preserves the restored PTY attach path.
+  const provider = await waitForSshProviderRegistration(connectionId)
   if (!provider) {
     throw new Error(`No PTY provider for connection "${connectionId}"`)
   }
@@ -266,11 +318,27 @@ function isClaudeLaunchCommand(command: string | undefined): boolean {
 /** Register an SSH PTY provider for a connection. */
 export function registerSshPtyProvider(connectionId: string, provider: IPtyProvider): void {
   sshProviders.set(connectionId, provider)
+  const waiters = sshProviderRegistrationWaiters.get(connectionId)
+  if (!waiters) {
+    return
+  }
+  sshProviderRegistrationWaiters.delete(connectionId)
+  for (const resolve of waiters) {
+    resolve(provider)
+  }
 }
 
 /** Remove an SSH PTY provider when a connection is closed. */
 export function unregisterSshPtyProvider(connectionId: string): void {
   sshProviders.delete(connectionId)
+  const waiters = sshProviderRegistrationWaiters.get(connectionId)
+  if (!waiters) {
+    return
+  }
+  sshProviderRegistrationWaiters.delete(connectionId)
+  for (const resolve of waiters) {
+    resolve(null)
+  }
 }
 
 /** Get the SSH PTY provider for a connection (for dispose on cleanup). */
@@ -739,6 +807,7 @@ export function registerPtyHandlers(
         connectionId?: string | null
         worktreeId?: string
         sessionId?: string
+        waitForProviderRegistration?: boolean
         shellOverride?: string
         // Why: closes the SIGKILL race documented in INVESTIGATION.md by
         // letting main patch + sync-flush the (worktreeId, tabId, leafId →
@@ -761,7 +830,10 @@ export function registerPtyHandlers(
         }
       }
     ) => {
-      const provider = getProvider(args.connectionId)
+      const provider =
+        args.connectionId && args.sessionId
+          ? await getProviderForSpawn(args.connectionId, args.waitForProviderRegistration !== false)
+          : getProvider(args.connectionId)
       const isClaudeLaunch = !args.connectionId && isClaudeLaunchCommand(args.command)
       if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
         throw new Error('A Claude account switch is in progress. Try again after it finishes.')

@@ -96,7 +96,7 @@ export function SshTargetCard({
         <p className="truncate text-xs text-muted-foreground">
           {target.username}@{target.host}:{target.port}
           {target.identityFile ? ` \u2022 ${target.identityFile}` : ''}
-          {target.remoteWorkspaceSyncEnabled ? ' \u2022 synced workspace' : ''}
+          {target.remoteWorkspaceSyncEnabled ? ' \u2022 sync remote workspace' : ''}
         </p>
         {state?.error ? (
           <p className="mt-0.5 truncate text-xs text-red-400">{state.error}</p>

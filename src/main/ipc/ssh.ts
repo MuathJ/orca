@@ -51,6 +51,15 @@ function getRelayInstanceId(target: SshTarget): string {
   return `synced-${createHash('sha256').update(stableKey).digest('hex').slice(0, 32)}`
 }
 
+function getRelayGracePeriodSeconds(target: SshTarget | undefined): number | undefined {
+  if (!target?.remoteWorkspaceSyncEnabled) {
+    return target?.relayGracePeriodSeconds
+  }
+  // Why: synced remote workspaces are host-owned. A separate grace setting
+  // lets them persist after all clients disconnect without changing classic SSH.
+  return target.remoteWorkspaceSyncGracePeriodSeconds ?? 0
+}
+
 // Why: ssh:testConnection calls connect() then disconnect(), which fires
 // state-change events to the renderer. This causes worktree cards to briefly
 // flash "connected" then "disconnected". Suppressing broadcasts during tests
@@ -234,7 +243,7 @@ export function registerSshHandlers(
         const target = sshStore?.getTarget(targetId)
         const conn = connectionManager?.getConnection(targetId)
         if (conn) {
-          void session.reconnect(conn, target?.relayGracePeriodSeconds)
+          void session.reconnect(conn, getRelayGracePeriodSeconds(target))
         }
       }
     }
@@ -378,7 +387,7 @@ export function registerSshHandlers(
         const c = connectionManager?.getConnection(tid)
         const t = sshStore?.getTarget(tid)
         if (c) {
-          void s.reconnect(c, t?.relayGracePeriodSeconds)
+          void s.reconnect(c, getRelayGracePeriodSeconds(t))
         }
       })
 
@@ -389,7 +398,7 @@ export function registerSshHandlers(
         void restorePortForwards(tid, getMainWindow)
       })
 
-      await session.establish(conn, target.relayGracePeriodSeconds)
+      await session.establish(conn, getRelayGracePeriodSeconds(target))
 
       // Why: we manually pushed `deploying-relay` above, so the renderer's
       // state is stuck there. Send `connected` directly to the renderer

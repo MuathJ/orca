@@ -72,6 +72,10 @@ export type AgentStatusEntry = {
   toolInput?: string
   /** Most recent assistant message preview, when the hook carried one. */
   lastAssistantMessage?: string
+  /** Provider-owned conversation/session id, when the agent exposes one.
+   *  Stored separately from PTY ids so expired SSH shells can resume the
+   *  Claude/Codex thread without persisting the full terminal transcript. */
+  agentSessionId?: string
   /** True when the current `done` state was reached via an interrupt rather
    *  than a normal turn completion (Claude Code's `is_interrupt: true`).
    *  Orthogonal to `state`: the agent still finished the turn, but the user
@@ -92,6 +96,7 @@ export type AgentStatusPayload = {
   toolName?: string
   toolInput?: string
   lastAssistantMessage?: string
+  agentSessionId?: string
   interrupted?: boolean
 }
 
@@ -117,6 +122,7 @@ export const AGENT_STATUS_TOOL_INPUT_MAX_LENGTH = 160
  *  second line of defense against a buggy/malicious agent spamming huge
  *  strings into the cache (which lives per pane with bounded history). */
 export const AGENT_STATUS_ASSISTANT_MESSAGE_MAX_LENGTH = 8000
+export const AGENT_SESSION_ID_MAX_LENGTH = 200
 /**
  * Freshness threshold for explicit agent status. Retained past this point so
  * WorktreeCard's sidebar dot can decay "working" back to "active" when the
@@ -244,6 +250,7 @@ function normalizeAgentStatusObject(parsed: unknown): ParsedAgentStatusPayload |
       obj.lastAssistantMessage,
       AGENT_STATUS_ASSISTANT_MESSAGE_MAX_LENGTH
     ),
+    agentSessionId: normalizeOptionalField(obj.agentSessionId, AGENT_SESSION_ID_MAX_LENGTH),
     // Why: only meaningful on `done`. Coerce to undefined on other states so
     // the field doesn't leak stale truth through state transitions.
     interrupted: obj.interrupted === true && state === 'done' ? true : undefined

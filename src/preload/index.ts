@@ -1391,8 +1391,11 @@ const api = {
   remoteWorkspace: {
     get: (args: { targetId: string }): Promise<unknown> =>
       ipcRenderer.invoke('remoteWorkspace:get', args),
-    setForConnectedTargets: (args: { session: unknown }): Promise<unknown> =>
-      ipcRenderer.invoke('remoteWorkspace:setForConnectedTargets', args),
+    setForConnectedTargets: (args: {
+      session: unknown
+      hydratedTargetIds?: string[]
+      targetScopes?: Record<string, { worktreePaths: string[] }>
+    }): Promise<unknown> => ipcRenderer.invoke('remoteWorkspace:setForConnectedTargets', args),
     listEnabledConnectedTargets: (): Promise<string[]> =>
       ipcRenderer.invoke('remoteWorkspace:listEnabledConnectedTargets'),
     clientId: (): Promise<string> => ipcRenderer.invoke('remoteWorkspace:clientId'),

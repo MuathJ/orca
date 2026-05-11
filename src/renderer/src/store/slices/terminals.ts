@@ -2,6 +2,7 @@
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
 import type {
+  AgentResumeBinding,
   SetupSplitDirection,
   TerminalLayoutSnapshot,
   TerminalTab,
@@ -12,7 +13,7 @@ import type { AgentStartedTelemetry } from '../../lib/worktree-activation'
 import { scheduleRuntimeGraphSync } from '@/runtime/sync-runtime-graph'
 import { clearTransientTerminalState, emptyLayoutSnapshot } from './terminal-helpers'
 import { isClaudeAgent, detectAgentStatusFromTitle } from '@/lib/agent-status'
-import { buildOrphanTerminalCleanupPatch, getOrphanTerminalIds } from './terminal-orphan-helpers'
+import { buildOrphanTerminalCleanupPatch, getOrphanTerminalIds } from './terminal-orphan-cleanup'
 import {
   dedupeTabOrder,
   ensureGroup,
@@ -217,9 +218,15 @@ export type TerminalSlice = {
    *  of pendingReconnectPtyIdByTabId because the deferred reconnect runs
    *  later, on tab focus. */
   deferredSshSessionIdsByTabId: Record<string, string>
+  /** Provider-owned Claude/Codex session ids keyed by `${tabId}:${paneId}`.
+   *  Kept separate from relay PTY ids; used only when the remote PTY is gone
+   *  and the agent CLI can resume its own conversation. */
+  agentResumeBindingsByPaneKey: Record<string, AgentResumeBinding>
   setDeferredSshReconnectTargets: (targetIds: string[]) => void
   removeDeferredSshReconnectTarget: (targetId: string) => void
   removeDeferredSshSessionId: (tabId: string) => void
+  setAgentResumeBinding: (paneKey: string, binding: AgentResumeBinding) => void
+  removeAgentResumeBinding: (paneKey: string) => void
   hydrateWorkspaceSession: (session: WorkspaceSessionState) => void
   reconnectPersistedTerminals: (signal?: AbortSignal) => Promise<void>
 }
@@ -250,6 +257,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   pendingColdRestoreByPtyId: {},
   deferredSshReconnectTargets: [],
   deferredSshSessionIdsByTabId: {},
+  agentResumeBindingsByPaneKey: {},
   cacheTimerByKey: {},
 
   setCacheTimerStartedAt: (key, ts) => {
@@ -318,6 +326,22 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       const next = { ...s.deferredSshSessionIdsByTabId }
       delete next[tabId]
       return { deferredSshSessionIdsByTabId: next }
+    }),
+  setAgentResumeBinding: (paneKey, binding) =>
+    set((s) => ({
+      agentResumeBindingsByPaneKey: {
+        ...s.agentResumeBindingsByPaneKey,
+        [paneKey]: binding
+      }
+    })),
+  removeAgentResumeBinding: (paneKey) =>
+    set((s) => {
+      if (!s.agentResumeBindingsByPaneKey[paneKey]) {
+        return {}
+      }
+      const next = { ...s.agentResumeBindingsByPaneKey }
+      delete next[paneKey]
+      return { agentResumeBindingsByPaneKey: next }
     }),
 
   createTab: (worktreeId, targetGroupId, shellOverride, options) => {
@@ -475,11 +499,17 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       const nextPendingIssueCommandSplitByTabId = { ...s.pendingIssueCommandSplitByTabId }
       delete nextPendingIssueCommandSplitByTabId[tabId]
       const nextCacheTimer = { ...s.cacheTimerByKey }
+      const nextAgentResumeBindings = { ...s.agentResumeBindingsByPaneKey }
       // Why: cache timer keys are `${tabId}:${paneId}` composites. Remove all
       // entries for the closing tab, regardless of how many panes it had.
       for (const key of Object.keys(nextCacheTimer)) {
         if (key.startsWith(`${tabId}:`)) {
           delete nextCacheTimer[key]
+        }
+      }
+      for (const key of Object.keys(nextAgentResumeBindings)) {
+        if (key.startsWith(`${tabId}:`)) {
+          delete nextAgentResumeBindings[key]
         }
       }
       // Why: keep activeTabIdByWorktree in sync when a tab is closed in a
@@ -540,6 +570,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         pendingSetupSplitByTabId: nextPendingSetupSplitByTabId,
         pendingIssueCommandSplitByTabId: nextPendingIssueCommandSplitByTabId,
         cacheTimerByKey: nextCacheTimer,
+        agentResumeBindingsByPaneKey: nextAgentResumeBindings,
         tabBarOrderByWorktree: nextTabBarOrderByWorktree,
         pendingSnapshotByPtyId: nextSnapshots,
         pendingColdRestoreByPtyId: nextColdRestores
@@ -1422,6 +1453,12 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           .flat()
           .map((tab) => tab.id)
       )
+      const agentResumeBindingsByPaneKey = Object.fromEntries(
+        Object.entries(session.agentResumeBindingsByPaneKey ?? {}).filter(([paneKey]) => {
+          const tabId = paneKey.split(':')[0]
+          return Boolean(tabId && validTabIds.has(tabId))
+        })
+      )
       const activeWorktreeId =
         session.activeWorktreeId && validWorktreeIds.has(session.activeWorktreeId)
           ? session.activeWorktreeId
@@ -1607,6 +1644,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
             .flat()
             .map((tab) => [tab.id, []] as const)
         ),
+        agentResumeBindingsByPaneKey,
         // Why: with the daemon backend, ptyIds are daemon session IDs that
         // survive app restart. Preserve ptyIdsByLeafId so that
         // reconnectPersistedTerminals can reattach each split-pane leaf

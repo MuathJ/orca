@@ -45,7 +45,15 @@ describe('parseWorkspaceSession', () => {
           ptyIdsByLeafId: { 'pane:1': 'daemon-session-A' }
         }
       },
-      activeWorktreeIdsOnShutdown: ['repo1::/path/wt1']
+      activeWorktreeIdsOnShutdown: ['repo1::/path/wt1'],
+      agentResumeBindingsByPaneKey: {
+        'tab1:1': {
+          provider: 'codex',
+          sessionId: 'session-1',
+          cwd: '/path/wt1',
+          updatedAt: 1_700_000_000_001
+        }
+      }
     })
     expect(result.ok).toBe(true)
   })

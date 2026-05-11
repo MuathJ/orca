@@ -1,5 +1,14 @@
 import React, { useCallback, useState } from 'react'
-import { Loader2, MonitorSmartphone, Server, ServerOff } from 'lucide-react'
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Cloud,
+  CloudOff,
+  Loader2,
+  MonitorSmartphone,
+  Server,
+  ServerOff
+} from 'lucide-react'
 import { toast } from 'sonner'
 import {
   DropdownMenu,
@@ -11,6 +20,7 @@ import {
 import { useAppStore } from '../../store'
 import { STATUS_LABELS, statusColor } from '../settings/SshTargetCard'
 import type { SshConnectionStatus } from '../../../../shared/ssh-types'
+import type { RemoteWorkspaceSyncStatus } from '@/store/slices/ssh'
 
 function isConnecting(status: SshConnectionStatus): boolean {
   return ['connecting', 'deploying-relay', 'reconnecting'].includes(status)
@@ -64,14 +74,100 @@ function overallLabel(status: 'connected' | 'partial' | 'disconnected' | 'connec
   }
 }
 
+function formatSyncAge(timestamp?: number): string | null {
+  if (!timestamp) {
+    return null
+  }
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
+  if (elapsedSeconds < 60) {
+    return 'just now'
+  }
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h ago`
+  }
+  return `${Math.floor(elapsedHours / 24)}d ago`
+}
+
+function syncStatusText(
+  status: RemoteWorkspaceSyncStatus | undefined,
+  connectionStatus: SshConnectionStatus
+): string {
+  if (!status) {
+    return connectionStatus === 'connected' ? 'Workspace sync ready' : 'Workspace sync offline'
+  }
+  switch (status.phase) {
+    case 'pulling':
+      return 'Loading synced workspace'
+    case 'pushing':
+      return 'Uploading workspace state'
+    case 'synced': {
+      const age = formatSyncAge(status.lastSyncedAt ?? status.updatedAt)
+      return age ? `Synced ${age}` : 'Workspace synced'
+    }
+    case 'conflict':
+      return status.message ?? 'Sync conflict'
+    case 'error':
+      return status.message ?? 'Workspace sync error'
+    case 'offline':
+      return status.message ?? 'Workspace sync offline'
+    case 'idle':
+      return status.message ?? 'Workspace sync ready'
+    default:
+      return 'Workspace sync ready'
+  }
+}
+
+function syncStatusClass(status: RemoteWorkspaceSyncStatus | undefined): string {
+  if (status?.phase === 'error' || status?.phase === 'conflict') {
+    return 'text-destructive'
+  }
+  return 'text-muted-foreground'
+}
+
+function SyncStatusIcon({
+  status
+}: {
+  status: RemoteWorkspaceSyncStatus | undefined
+}): React.JSX.Element {
+  if (status?.phase === 'pulling' || status?.phase === 'pushing') {
+    return <Loader2 className="size-3 shrink-0 animate-spin" />
+  }
+  if (status?.phase === 'synced') {
+    return <CheckCircle2 className="size-3 shrink-0" />
+  }
+  if (status?.phase === 'conflict') {
+    return <AlertTriangle className="size-3 shrink-0 text-destructive" />
+  }
+  if (status?.phase === 'error') {
+    return <AlertTriangle className="size-3 shrink-0 text-destructive" />
+  }
+  if (status?.phase === 'offline') {
+    return <CloudOff className="size-3 shrink-0" />
+  }
+  return <Cloud className="size-3 shrink-0" />
+}
+
+function hasSyncIssue(status: RemoteWorkspaceSyncStatus | undefined): boolean {
+  return status?.phase === 'conflict' || status?.phase === 'error'
+}
+
 function TargetRow({
   targetId,
   label,
-  status
+  status,
+  remoteSyncEnabled,
+  syncStatus
 }: {
   targetId: string
   label: string
   status: SshConnectionStatus
+  remoteSyncEnabled: boolean
+  syncStatus: RemoteWorkspaceSyncStatus | undefined
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false)
 
@@ -103,6 +199,14 @@ function TargetRow({
       <div className="min-w-0 flex-1">
         <div className="truncate text-[12px] font-medium">{label}</div>
         <div className="text-[10px] text-muted-foreground">{STATUS_LABELS[status]}</div>
+        {remoteSyncEnabled && (
+          <div
+            className={`mt-0.5 flex min-w-0 items-center gap-1 text-[10px] ${syncStatusClass(syncStatus)}`}
+          >
+            <SyncStatusIcon status={syncStatus} />
+            <span className="truncate">{syncStatusText(syncStatus, status)}</span>
+          </div>
+        )}
       </div>
       {busy ? (
         <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
@@ -136,12 +240,22 @@ export function SshStatusSegment({
 }): React.JSX.Element | null {
   const sshConnectionStates = useAppStore((s) => s.sshConnectionStates)
   const sshTargetLabels = useAppStore((s) => s.sshTargetLabels)
+  const sshTargetRemoteSyncEnabled = useAppStore((s) => s.sshTargetRemoteSyncEnabled)
+  const remoteWorkspaceSyncStatusByTargetId = useAppStore(
+    (s) => s.remoteWorkspaceSyncStatusByTargetId
+  )
   const setActiveView = useAppStore((s) => s.setActiveView)
   const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
 
   const targets = Array.from(sshTargetLabels.entries()).map(([id, label]) => {
     const state = sshConnectionStates.get(id)
-    return { id, label, status: (state?.status ?? 'disconnected') as SshConnectionStatus }
+    return {
+      id,
+      label,
+      status: (state?.status ?? 'disconnected') as SshConnectionStatus,
+      remoteSyncEnabled: sshTargetRemoteSyncEnabled.get(id) === true,
+      syncStatus: remoteWorkspaceSyncStatusByTargetId[id]
+    }
   })
 
   if (targets.length === 0) {
@@ -151,6 +265,9 @@ export function SshStatusSegment({
   const statuses = targets.map((t) => t.status)
   const overall = overallStatus(statuses)
   const anyConnecting = overall === 'connecting'
+  const anySyncIssue = targets.some(
+    (target) => target.remoteSyncEnabled && hasSyncIssue(target.syncStatus)
+  )
 
   return (
     <DropdownMenu>
@@ -163,7 +280,9 @@ export function SshStatusSegment({
           {iconOnly ? (
             <span className="inline-flex items-center gap-1">
               <span className={`inline-block size-2 rounded-full ${overallDotColor(overall)}`} />
-              {anyConnecting ? (
+              {anySyncIssue ? (
+                <AlertTriangle className="size-3 text-destructive" />
+              ) : anyConnecting ? (
                 <Loader2 className="size-3 animate-spin text-muted-foreground" />
               ) : (
                 <MonitorSmartphone className="size-3 text-muted-foreground" />
@@ -185,17 +304,25 @@ export function SshStatusSegment({
                   SSH <span className="text-muted-foreground">{overallLabel(overall)}</span>
                 </span>
               )}
+              {anySyncIssue && <AlertTriangle className="size-3 text-destructive" />}
               <span className={`inline-block size-1.5 rounded-full ${overallDotColor(overall)}`} />
             </span>
           )}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[220px]">
+      <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[280px]">
         <div className="px-2 pt-1.5 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
           SSH Connections
         </div>
         {targets.map((t) => (
-          <TargetRow key={t.id} targetId={t.id} label={t.label} status={t.status} />
+          <TargetRow
+            key={t.id}
+            targetId={t.id}
+            label={t.label}
+            status={t.status}
+            remoteSyncEnabled={t.remoteSyncEnabled}
+            syncStatus={t.syncStatus}
+          />
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuItem

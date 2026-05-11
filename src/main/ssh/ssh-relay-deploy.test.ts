@@ -118,6 +118,26 @@ describe('deployAndLaunchRelay', () => {
     vi.useRealTimers()
   })
 
+  it('passes disabled grace time through to the relay launch command', async () => {
+    const conn = makeMockConnection()
+    const mockExecCommand = vi.mocked(execCommand)
+    mockExecCommand.mockResolvedValueOnce('Linux x86_64')
+    mockExecCommand.mockResolvedValueOnce('/home/user')
+    mockExecCommand.mockResolvedValueOnce('OK')
+    mockExecCommand.mockResolvedValueOnce('0.1.0')
+    mockExecCommand.mockResolvedValueOnce('DEAD')
+    mockExecCommand.mockResolvedValueOnce('READY')
+
+    await deployAndLaunchRelay(conn, undefined, 0, 'target-sync')
+
+    const launch =
+      vi
+        .mocked(conn.exec)
+        .mock.calls.map(([command]) => command)
+        .find((command) => command.includes('nohup')) ?? ''
+    expect(launch).toContain('--grace-time 0')
+  })
+
   it('uses distinct target-specific relay socket paths', async () => {
     const connA = makeMockConnection()
     const connB = makeMockConnection()

@@ -287,7 +287,9 @@ async function launchRelay(
   const nodePath = await resolveRemoteNodePath(conn)
   // Why: graceTimeSeconds originates from user-editable SshTarget config.
   // Clamping to integer prevents shell injection if the type ever loosened.
-  const graceTime = Math.max(60, Math.min(3600, Math.floor(graceTimeSeconds ?? 300)))
+  // Why: 0 is reserved for remote workspace sync targets that intentionally persist.
+  const requestedGraceTime = Math.floor(graceTimeSeconds ?? 300)
+  const graceTime = requestedGraceTime === 0 ? 0 : Math.max(60, Math.min(3600, requestedGraceTime))
   const escapedDir = shellEscape(remoteDir)
   const escapedNode = shellEscape(nodePath)
   // Why: remoteRelayDir is shared by every Orca target for the same remote

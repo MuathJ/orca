@@ -1,3 +1,4 @@
+/* oxlint-disable max-lines -- Why: these SSH IPC tests share one mocked Electron/relay module graph; splitting the file would duplicate brittle mock setup and obscure lifecycle assertions. */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const {
@@ -268,6 +269,94 @@ describe('SSH IPC handlers', () => {
     await handlers.get('ssh:connect')!(null, { targetId: 'ssh-1' })
 
     expect(mockConnectionManager.connect).toHaveBeenCalledWith(target)
+  })
+
+  it('uses the classic relay grace period when remote workspace sync is disabled', async () => {
+    const target: SshTarget = {
+      id: 'ssh-1',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'deploy',
+      relayGracePeriodSeconds: 900,
+      remoteWorkspaceSyncEnabled: false
+    }
+    mockSshStore.getTarget.mockReturnValue(target)
+    mockConnectionManager.connect.mockResolvedValue({})
+    mockConnectionManager.getState.mockReturnValue({
+      targetId: 'ssh-1',
+      status: 'connected',
+      error: null,
+      reconnectAttempt: 0
+    })
+
+    await handlers.get('ssh:connect')!(null, { targetId: 'ssh-1' })
+
+    expect(mockDeployAndLaunchRelay).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      900,
+      'ssh-1'
+    )
+  })
+
+  it('defaults synced remote workspace relay grace to disabled expiry', async () => {
+    const target: SshTarget = {
+      id: 'ssh-1',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'deploy',
+      relayGracePeriodSeconds: 300,
+      remoteWorkspaceSyncEnabled: true
+    }
+    mockSshStore.getTarget.mockReturnValue(target)
+    mockConnectionManager.connect.mockResolvedValue({})
+    mockConnectionManager.getState.mockReturnValue({
+      targetId: 'ssh-1',
+      status: 'connected',
+      error: null,
+      reconnectAttempt: 0
+    })
+
+    await handlers.get('ssh:connect')!(null, { targetId: 'ssh-1' })
+
+    expect(mockDeployAndLaunchRelay).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      0,
+      expect.stringMatching(/^synced-/)
+    )
+  })
+
+  it('uses configured synced remote workspace relay grace when set', async () => {
+    const target: SshTarget = {
+      id: 'ssh-1',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'deploy',
+      relayGracePeriodSeconds: 300,
+      remoteWorkspaceSyncEnabled: true,
+      remoteWorkspaceSyncGracePeriodSeconds: 600
+    }
+    mockSshStore.getTarget.mockReturnValue(target)
+    mockConnectionManager.connect.mockResolvedValue({})
+    mockConnectionManager.getState.mockReturnValue({
+      targetId: 'ssh-1',
+      status: 'connected',
+      error: null,
+      reconnectAttempt: 0
+    })
+
+    await handlers.get('ssh:connect')!(null, { targetId: 'ssh-1' })
+
+    expect(mockDeployAndLaunchRelay).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      600,
+      expect.stringMatching(/^synced-/)
+    )
   })
 
   it('forwards remote PTY events into the runtime', async () => {

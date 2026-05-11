@@ -54,6 +54,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
   const [pendingRemove, setPendingRemove] = useState<{ id: string; label: string } | null>(null)
 
   const setSshTargetLabels = useAppStore((s) => s.setSshTargetLabels)
+  const setSshTargetRemoteSyncEnabled = useAppStore((s) => s.setSshTargetRemoteSyncEnabled)
 
   const loadTargets = useCallback(
     async (opts?: { signal?: AbortSignal }) => {
@@ -64,17 +65,20 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
         }
         setTargets(result)
         const labels = new Map<string, string>()
+        const remoteSyncEnabled = new Map<string, boolean>()
         for (const t of result) {
           labels.set(t.id, t.label)
+          remoteSyncEnabled.set(t.id, t.remoteWorkspaceSyncEnabled === true)
         }
         setSshTargetLabels(labels)
+        setSshTargetRemoteSyncEnabled(remoteSyncEnabled)
       } catch {
         if (!opts?.signal?.aborted) {
           toast.error('Failed to load SSH targets')
         }
       }
     },
-    [setSshTargetLabels]
+    [setSshTargetLabels, setSshTargetRemoteSyncEnabled]
   )
 
   useEffect(() => {
@@ -101,6 +105,19 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       return
     }
 
+    const remoteWorkspaceSyncGraceSeconds = form.remoteWorkspaceSyncEnabled
+      ? parseInt(form.remoteWorkspaceSyncGracePeriodSeconds, 10)
+      : 0
+    if (
+      isNaN(remoteWorkspaceSyncGraceSeconds) ||
+      remoteWorkspaceSyncGraceSeconds < 0 ||
+      remoteWorkspaceSyncGraceSeconds > 3600 ||
+      (remoteWorkspaceSyncGraceSeconds > 0 && remoteWorkspaceSyncGraceSeconds < 60)
+    ) {
+      toast.error('Remote workspace grace period must be 0 or between 60 and 3600 seconds')
+      return
+    }
+
     const target = {
       label: form.label.trim() || `${form.username}@${form.host}`,
       configHost: form.configHost.trim() || form.host.trim(),
@@ -109,6 +126,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       username: form.username.trim(),
       relayGracePeriodSeconds: graceSeconds,
       remoteWorkspaceSyncEnabled: form.remoteWorkspaceSyncEnabled,
+      remoteWorkspaceSyncGracePeriodSeconds: remoteWorkspaceSyncGraceSeconds,
       ...(form.identityFile.trim() ? { identityFile: form.identityFile.trim() } : {}),
       ...(form.proxyCommand.trim() ? { proxyCommand: form.proxyCommand.trim() } : {}),
       ...(form.jumpHost.trim() ? { jumpHost: form.jumpHost.trim() } : {})
@@ -160,7 +178,10 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       proxyCommand: target.proxyCommand ?? '',
       jumpHost: target.jumpHost ?? '',
       relayGracePeriodSeconds: String(target.relayGracePeriodSeconds ?? 300),
-      remoteWorkspaceSyncEnabled: target.remoteWorkspaceSyncEnabled === true
+      remoteWorkspaceSyncEnabled: target.remoteWorkspaceSyncEnabled === true,
+      remoteWorkspaceSyncGracePeriodSeconds: String(
+        target.remoteWorkspaceSyncGracePeriodSeconds ?? 0
+      )
     })
     setShowForm(true)
   }

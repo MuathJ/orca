@@ -957,4 +957,43 @@ describe('createMainWindow', () => {
     expect(browserWindowInstance.maximize).toHaveBeenCalledTimes(1)
     expect(browserWindowInstance.show).toHaveBeenCalledTimes(1)
   })
+
+  it('does not touch destroyed webContents from the closed handler', () => {
+    const windowHandlers: Record<string, (...args: any[]) => void> = {}
+    const webContents = {
+      on: vi.fn(),
+      removeListener: vi.fn(() => {
+        throw new Error('destroyed webContents should not be mutated')
+      }),
+      isDestroyed: vi.fn(() => true),
+      setZoomLevel: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      invalidate: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      send: vi.fn()
+    }
+    const browserWindowInstance = {
+      webContents,
+      on: vi.fn((event, handler) => {
+        windowHandlers[event] = handler
+      }),
+      isDestroyed: vi.fn(() => true),
+      isMaximized: vi.fn(() => false),
+      isFullScreen: vi.fn(() => false),
+      getSize: vi.fn(() => [1200, 800]),
+      setSize: vi.fn(),
+      maximize: vi.fn(),
+      show: vi.fn(),
+      loadFile: vi.fn(),
+      loadURL: vi.fn()
+    }
+    browserWindowMock.mockImplementation(function () {
+      return browserWindowInstance
+    })
+
+    createMainWindow(null)
+
+    expect(() => windowHandlers.closed()).not.toThrow()
+    expect(webContents.removeListener).not.toHaveBeenCalled()
+  })
 })

@@ -259,6 +259,13 @@ describe('parseAgentStatusPayload', () => {
     ).toBeUndefined()
   })
 
+  it('normalizes provider session ids for resume bindings', () => {
+    const result = parseAgentStatusPayload(
+      '{"state":"working","agentType":"codex","agentSessionId":"  session-123  "}'
+    )
+    expect(result?.agentSessionId).toBe('session-123')
+  })
+
   it('never leaves a lone high surrogate when truncating mid surrogate-pair', () => {
     // Why: prepend a single-code-unit character so truncation at the (even)
     // AGENT_STATUS_MAX_FIELD_LENGTH cap lands ON a high surrogate rather than

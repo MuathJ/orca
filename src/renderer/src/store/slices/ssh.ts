@@ -13,11 +13,35 @@ export type SshCredentialRequest = {
   detail: string
 }
 
+export type RemoteWorkspaceSyncPhase =
+  | 'idle'
+  | 'pulling'
+  | 'pushing'
+  | 'synced'
+  | 'conflict'
+  | 'error'
+  | 'offline'
+
+export type RemoteWorkspaceSyncStatus = {
+  phase: RemoteWorkspaceSyncPhase
+  message?: string
+  revision?: number
+  updatedAt: number
+  lastSyncedAt?: number
+  direction?: 'push' | 'pull'
+}
+
 export type SshSlice = {
   sshConnectionStates: Map<string, SshConnectionState>
   /** Maps target IDs to their user-facing labels. Populated during hydration
    * so components can look up labels without per-component IPC calls. */
   sshTargetLabels: Map<string, string>
+  /** Tracks which targets have remote workspace sync enabled. */
+  sshTargetRemoteSyncEnabled: Map<string, boolean>
+  /** Per-target remote workspace sync status shown in the SSH status menu. */
+  remoteWorkspaceSyncStatusByTargetId: Record<string, RemoteWorkspaceSyncStatus>
+  /** Targets whose initial remote workspace pull has completed for known worktrees. */
+  remoteWorkspaceHydratedTargetIds: Set<string>
   sshCredentialQueue: SshCredentialRequest[]
   /** Incremented when an SSH target transitions to 'connected'. Allows
    * components like the file explorer to re-trigger data loads that failed
@@ -33,6 +57,14 @@ export type SshSlice = {
   detectedPortsByConnection: Record<string, DetectedPort[]>
   setSshConnectionState: (targetId: string, state: SshConnectionState) => void
   setSshTargetLabels: (labels: Map<string, string>) => void
+  setSshTargetRemoteSyncEnabled: (enabled: Map<string, boolean>) => void
+  setRemoteWorkspaceSyncStatus: (
+    targetId: string,
+    status: Omit<RemoteWorkspaceSyncStatus, 'updatedAt'> & { updatedAt?: number }
+  ) => void
+  clearRemoteWorkspaceSyncStatus: (targetId: string) => void
+  markRemoteWorkspaceHydrated: (targetId: string) => void
+  clearRemoteWorkspaceHydrated: (targetId: string) => void
   enqueueSshCredentialRequest: (req: SshCredentialRequest) => void
   removeSshCredentialRequest: (requestId: string) => void
   bumpSshConnectedGeneration: () => void
@@ -44,6 +76,9 @@ export type SshSlice = {
 export const createSshSlice: StateCreator<AppState, [], [], SshSlice> = (set) => ({
   sshConnectionStates: new Map(),
   sshTargetLabels: new Map(),
+  sshTargetRemoteSyncEnabled: new Map(),
+  remoteWorkspaceSyncStatusByTargetId: {},
+  remoteWorkspaceHydratedTargetIds: new Set(),
   sshCredentialQueue: [],
   sshConnectedGeneration: 0,
   portForwardsByConnection: {},
@@ -57,6 +92,41 @@ export const createSshSlice: StateCreator<AppState, [], [], SshSlice> = (set) =>
     }),
 
   setSshTargetLabels: (labels) => set({ sshTargetLabels: labels }),
+  setSshTargetRemoteSyncEnabled: (enabled) => set({ sshTargetRemoteSyncEnabled: enabled }),
+  setRemoteWorkspaceSyncStatus: (targetId, status) =>
+    set((s) => ({
+      remoteWorkspaceSyncStatusByTargetId: {
+        ...s.remoteWorkspaceSyncStatusByTargetId,
+        [targetId]: {
+          ...status,
+          updatedAt: status.updatedAt ?? Date.now()
+        }
+      }
+    })),
+  clearRemoteWorkspaceSyncStatus: (targetId) =>
+    set((s) => {
+      if (!s.remoteWorkspaceSyncStatusByTargetId[targetId]) {
+        return {}
+      }
+      const next = { ...s.remoteWorkspaceSyncStatusByTargetId }
+      delete next[targetId]
+      return { remoteWorkspaceSyncStatusByTargetId: next }
+    }),
+  markRemoteWorkspaceHydrated: (targetId) =>
+    set((s) => {
+      const next = new Set(s.remoteWorkspaceHydratedTargetIds)
+      next.add(targetId)
+      return { remoteWorkspaceHydratedTargetIds: next }
+    }),
+  clearRemoteWorkspaceHydrated: (targetId) =>
+    set((s) => {
+      if (!s.remoteWorkspaceHydratedTargetIds.has(targetId)) {
+        return {}
+      }
+      const next = new Set(s.remoteWorkspaceHydratedTargetIds)
+      next.delete(targetId)
+      return { remoteWorkspaceHydratedTargetIds: next }
+    }),
   enqueueSshCredentialRequest: (req) =>
     set((s) => ({ sshCredentialQueue: [...s.sshCredentialQueue, req] })),
   removeSshCredentialRequest: (requestId) =>

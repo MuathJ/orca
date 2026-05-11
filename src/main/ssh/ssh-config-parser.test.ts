@@ -166,7 +166,9 @@ describe('sshConfigHostsToTargets', () => {
       label: 'myserver',
       host: '10.0.0.1',
       port: 22,
-      username: 'deploy'
+      username: 'deploy',
+      remoteWorkspaceSyncEnabled: true,
+      remoteWorkspaceSyncGracePeriodSeconds: 0
     })
     expect(targets[0].id).toMatch(/^ssh-/)
   })

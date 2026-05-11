@@ -55,10 +55,127 @@ import {
   canGoBackWorktreeHistory,
   canGoForwardWorktreeHistory
 } from '@/store/slices/worktree-nav-history'
-import type { OnboardingState } from '../../shared/types'
+import type { RemoteWorkspaceSyncStatus } from '@/store/slices/ssh'
+import type { RemoteWorkspacePatchResult } from '../../shared/remote-workspace-types'
+import type { OnboardingState, WorkspaceSessionState } from '../../shared/types'
 
 const isMac = navigator.userAgent.includes('Mac')
 const isWindows = !isMac && navigator.userAgent.includes('Windows')
+type RemoteWorkspaceSyncStatusUpdate = Omit<RemoteWorkspaceSyncStatus, 'updatedAt'> & {
+  updatedAt?: number
+}
+
+function setRemoteWorkspaceSyncStatusForTargets(
+  targetIds: string[],
+  status: RemoteWorkspaceSyncStatusUpdate
+): void {
+  const store = useAppStore.getState()
+  for (const targetId of targetIds) {
+    store.setRemoteWorkspaceSyncStatus(targetId, status)
+  }
+}
+
+function remoteWorkspacePushStatusFromResult(
+  result: RemoteWorkspacePatchResult
+): RemoteWorkspaceSyncStatusUpdate {
+  if (result.ok) {
+    return {
+      phase: 'synced',
+      direction: 'push',
+      revision: result.snapshot.revision,
+      lastSyncedAt: Date.now(),
+      message: 'Workspace synced'
+    }
+  }
+  if (result.reason === 'stale-revision') {
+    return {
+      phase: 'conflict',
+      direction: 'push',
+      revision: result.snapshot?.revision,
+      message: 'Sync conflict; reconnect or make another change to retry'
+    }
+  }
+  return {
+    phase: 'error',
+    direction: 'push',
+    message: result.message ?? 'Remote workspace sync unavailable'
+  }
+}
+
+function getRemoteWorkspaceTargetScope(targetId: string): { worktreePaths: string[] } {
+  const store = useAppStore.getState()
+  const repoIds = new Set(
+    store.repos.filter((repo) => repo.connectionId === targetId).map((repo) => repo.id)
+  )
+  const worktreePaths = Object.values(store.worktreesByRepo)
+    .flat()
+    .filter((worktree) => repoIds.has(worktree.repoId))
+    .map((worktree) => worktree.path)
+    .filter((path, index, paths) => path.length > 0 && paths.indexOf(path) === index)
+  return { worktreePaths }
+}
+
+async function pushRemoteWorkspaceSession(session: WorkspaceSessionState): Promise<void> {
+  const api = window.api.remoteWorkspace
+  if (!api) {
+    return
+  }
+
+  let targetIds: string[] = []
+  try {
+    const connectedTargetIds = await api.listEnabledConnectedTargets()
+    const hydratedTargetIds = useAppStore.getState().remoteWorkspaceHydratedTargetIds
+    const waitingTargetIds = connectedTargetIds.filter(
+      (targetId) => !hydratedTargetIds.has(targetId)
+    )
+    // Why: startup can connect SSH before the newly imported projects exist
+    // locally. Pushing before the first pull would overwrite the relay.
+    targetIds = connectedTargetIds.filter((targetId) => hydratedTargetIds.has(targetId))
+    if (waitingTargetIds.length > 0) {
+      setRemoteWorkspaceSyncStatusForTargets(waitingTargetIds, {
+        phase: 'pulling',
+        direction: 'pull',
+        message: 'Waiting to load remote workspace'
+      })
+    }
+    if (targetIds.length === 0) {
+      return
+    }
+    const targetScopes = Object.fromEntries(
+      targetIds.map((targetId) => [targetId, getRemoteWorkspaceTargetScope(targetId)])
+    )
+    setRemoteWorkspaceSyncStatusForTargets(targetIds, {
+      phase: 'pushing',
+      direction: 'push',
+      message: 'Uploading workspace state'
+    })
+    const results = await api.setForConnectedTargets({
+      session,
+      hydratedTargetIds: targetIds,
+      targetScopes
+    })
+    const updatedTargetIds = new Set<string>()
+    for (const { targetId, result } of results) {
+      updatedTargetIds.add(targetId)
+      setRemoteWorkspaceSyncStatusForTargets(
+        [targetId],
+        remoteWorkspacePushStatusFromResult(result)
+      )
+    }
+    const missingTargetIds = targetIds.filter((targetId) => !updatedTargetIds.has(targetId))
+    setRemoteWorkspaceSyncStatusForTargets(missingTargetIds, {
+      phase: 'offline',
+      direction: 'push',
+      message: 'Waiting for SSH connection'
+    })
+  } catch (err) {
+    setRemoteWorkspaceSyncStatusForTargets(targetIds, {
+      phase: 'error',
+      direction: 'push',
+      message: err instanceof Error ? err.message : 'Failed to sync remote workspace'
+    })
+  }
+}
 
 // Why: 'hidden' titleBarStyle on Windows removes the native OS title bar,
 // so we render our own minimize/maximize/close buttons.  These SVG icons match
@@ -413,6 +530,7 @@ function App(): React.JSX.Element {
   // App's render cycle, eliminating re-renders on every tab/file/browser change.
   useEffect(() => {
     let timer: number | null = null
+    let lastSessionJson: string | null = null
     const unsub = useAppStore.subscribe((state) => {
       if (!state.workspaceSessionReady) {
         return
@@ -424,9 +542,14 @@ function App(): React.JSX.Element {
       timer = window.setTimeout(() => {
         timer = null
         const payload = buildWorkspaceSessionPayload(state)
+        const payloadJson = JSON.stringify(payload)
+        if (payloadJson === lastSessionJson) {
+          return
+        }
+        lastSessionJson = payloadJson
         void window.api.session.set(payload)
         if (shouldSyncRemoteWorkspace) {
-          void window.api.remoteWorkspace?.setForConnectedTargets({ session: payload })
+          void pushRemoteWorkspaceSession(payload)
         }
       }, 150)
     })

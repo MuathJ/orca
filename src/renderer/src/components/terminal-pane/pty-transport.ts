@@ -355,6 +355,9 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
           command,
           ...(connectionId ? { connectionId } : {}),
           ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(options.waitForProviderRegistration === false
+            ? { waitForProviderRegistration: false }
+            : {}),
           worktreeId,
           ...(tabId ? { tabId } : {}),
           ...(leafId ? { leafId } : {}),

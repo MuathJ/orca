@@ -844,6 +844,8 @@ export type PreloadApi = {
     get: (args: { targetId: string }) => Promise<RemoteWorkspaceSnapshot | null>
     setForConnectedTargets: (args: {
       session: WorkspaceSessionState
+      hydratedTargetIds?: string[]
+      targetScopes?: Record<string, { worktreePaths: string[] }>
     }) => Promise<{ targetId: string; result: RemoteWorkspacePatchResult }[]>
     listEnabledConnectedTargets: () => Promise<string[]>
     clientId: () => Promise<string>

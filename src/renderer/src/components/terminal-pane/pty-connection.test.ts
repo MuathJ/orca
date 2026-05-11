@@ -35,6 +35,8 @@ type StoreState = {
   removeDeferredSshSessionId: ReturnType<typeof vi.fn>
   consumePendingColdRestore: ReturnType<typeof vi.fn>
   consumePendingSnapshot: ReturnType<typeof vi.fn>
+  removeAgentStatus: ReturnType<typeof vi.fn>
+  removeAgentResumeBinding: ReturnType<typeof vi.fn>
 }
 
 type ConnectCallbacks = {
@@ -238,12 +240,14 @@ describe('connectPanePty', () => {
       removeDeferredSshSessionId: vi.fn(),
       consumePendingColdRestore: vi.fn(() => null),
       consumePendingSnapshot: vi.fn(() => null),
-      removeAgentStatus: vi.fn()
+      removeAgentStatus: vi.fn(),
+      removeAgentResumeBinding: vi.fn()
     } as StoreState
     ;(globalThis as unknown as { window: unknown }).window = {
       api: {
         ssh: {
-          connect: vi.fn().mockResolvedValue({ status: 'connected' })
+          connect: vi.fn().mockResolvedValue({ status: 'connected' }),
+          needsPassphrasePrompt: vi.fn().mockResolvedValue(false)
         },
         pty: {
           signal: vi.fn(),
@@ -514,7 +518,8 @@ describe('connectPanePty', () => {
       mockStoreState = {
         ...mockStoreState,
         tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
-        repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }]
+        repos: [{ id: 'repo1', connectionId: 'ssh-conn-1' }],
+        sshConnectionStates: new Map([['ssh-conn-1', { status: 'connected' }]])
       }
 
       const pane = createPane(1)
@@ -1042,6 +1047,94 @@ describe('connectPanePty', () => {
     expect(api.pty.signal).toHaveBeenCalledWith('leaf-session', 'SIGWINCH')
   })
 
+  it('waits for SSH connection before spawning a remote terminal without restored session metadata', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport('pty-new')
+    transportFactoryQueue.push(transport)
+
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: 'conn-1' }],
+      sshConnectionStates: new Map([['conn-1', { status: 'disconnected' }]]),
+      deferredSshReconnectTargets: [],
+      deferredSshSessionIdsByTabId: {}
+    }
+
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const deps = createDeps()
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    await flushAsyncTicks(20)
+
+    const api = (
+      globalThis as unknown as {
+        window: {
+          api: {
+            ssh: { connect: ReturnType<typeof vi.fn> }
+          }
+        }
+      }
+    ).window.api
+    expect(api.ssh.connect).toHaveBeenCalledWith({ targetId: 'conn-1' })
+    expect(transport.connect).toHaveBeenCalledWith(expect.not.objectContaining({ sessionId: null }))
+    expect(mockStoreState.removeDeferredSshReconnectTarget).toHaveBeenCalledWith('conn-1')
+  })
+
+  it('keeps deferred SSH session metadata when provider registration is still catching up', async () => {
+    vi.useFakeTimers()
+    globalThis.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callback(0)
+      return 1
+    })
+    try {
+      const { connectPanePty } = await import('./pty-connection')
+      const transport = createMockTransport()
+      transport.connect.mockImplementation(async (opts: { callbacks?: ConnectCallbacks }) => {
+        opts.callbacks?.onError?.(
+          'SSH connection is not active. Use the reconnect dialog or Settings to connect.'
+        )
+        return undefined
+      })
+      transportFactoryQueue.push(transport)
+
+      mockStoreState = {
+        ...mockStoreState,
+        tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+        repos: [{ id: 'repo1', connectionId: 'conn-1' }],
+        sshConnectionStates: new Map([['conn-1', { status: 'connected' }]]),
+        deferredSshReconnectTargets: ['conn-1'],
+        deferredSshSessionIdsByTabId: { 'tab-1': 'restored-session' }
+      }
+
+      const pane = createPane(1)
+      const manager = createManager(1)
+      const deps = createDeps()
+
+      const disposable = connectPanePty(pane as never, manager as never, deps as never)
+      await flushAsyncTicks(20)
+
+      expect(transport.connect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 'restored-session',
+          waitForProviderRegistration: false
+        })
+      )
+      expect(mockStoreState.removeDeferredSshSessionId).not.toHaveBeenCalled()
+      expect(mockStoreState.removeDeferredSshReconnectTarget).not.toHaveBeenCalled()
+      expect(deps.clearTabPtyId).not.toHaveBeenCalledWith('tab-1', 'restored-session')
+      expect(deps.updateTabPtyId).not.toHaveBeenCalled()
+      expect(deps.onPtyErrorRef.current).not.toHaveBeenCalled()
+
+      disposable.dispose()
+      await vi.runOnlyPendingTimersAsync()
+      await flushAsyncTicks(5)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows an informational toast instead of a terminal error when an SSH session expired', async () => {
     const { connectPanePty } = await import('./pty-connection')
     const transport = createMockTransport()
@@ -1133,10 +1226,9 @@ describe('connectPanePty', () => {
     )
   })
 
-  // Why: onAgentExited must clear any running prompt-cache countdown so the
-  // sidebar does not show a stale timer for a tab that no longer has an
-  // active Claude session.
-  it('clears the cache timer when the agent exits', async () => {
+  // Why: onAgentExited must clear pane-scoped agent state so a shell tab that
+  // used to run Claude/Codex does not later auto-resume a stale agent session.
+  it('clears pane agent state when the agent exits', async () => {
     const { connectPanePty } = await import('./pty-connection')
     const transport = createMockTransport()
     transportFactoryQueue.push(transport)
@@ -1155,5 +1247,7 @@ describe('connectPanePty', () => {
     agentExitedHandler()
 
     expect(deps.setCacheTimerStartedAt).toHaveBeenCalledWith('tab-1:1', null)
+    expect(mockStoreState.removeAgentStatus).toHaveBeenCalledWith('tab-1:1')
+    expect(mockStoreState.removeAgentResumeBinding).toHaveBeenCalledWith('tab-1:1')
   })
 })

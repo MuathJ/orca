@@ -1,3 +1,4 @@
+/* oxlint-disable max-lines -- Why: these IPC tests share one mocked Electron/relay setup; splitting would duplicate module-hoist state and make stale-revision coverage harder to follow. */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDefaultWorkspaceSession } from '../../shared/constants'
 import type { Repo, WorkspaceSessionState } from '../../shared/types'
@@ -146,5 +147,194 @@ describe('registerRemoteWorkspaceHandlers', () => {
     expect(patchSession.activeWorktreeId).toBe(worktreeId)
     expect(patchSession.openFilesByWorktree?.[worktreeId]).toHaveLength(1)
     expect(patchSession.unifiedTabs?.[worktreeId]?.[0]?.contentType).toBe('editor')
+  })
+
+  it('does not push a target before the renderer has hydrated it', async () => {
+    const { registerRemoteWorkspaceHandlers } = await import('./remote-workspace')
+    const store = createStore()
+    registerRemoteWorkspaceHandlers(store as never)
+
+    const handler = handlers.get('remoteWorkspace:setForConnectedTargets')
+    expect(handler).toBeDefined()
+    const result = await handler?.(null, {
+      session: getDefaultWorkspaceSession(),
+      hydratedTargetIds: []
+    })
+
+    expect(result).toEqual([])
+    expect(mux.request).not.toHaveBeenCalledWith('workspace.patch', expect.anything())
+  })
+
+  it('preserves remote worktrees outside the local target scope when pushing', async () => {
+    const { registerRemoteWorkspaceHandlers } = await import('./remote-workspace')
+    const store = createStore()
+    const localWorktreeId = `${remoteRepo.id}::/repo`
+    const remoteOnlyWorktreeId = 'repo-other::/other'
+    const remoteOnlyTab = {
+      id: 'tab-remote-only',
+      ptyId: 'pty-remote-only',
+      worktreeId: remoteOnlyWorktreeId,
+      title: 'Remote only',
+      customTitle: null,
+      color: null,
+      sortOrder: 0,
+      createdAt: 1
+    }
+    mux.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'workspace.get') {
+        return {
+          namespace: params.namespace,
+          revision: 7,
+          updatedAt: 7,
+          session: {
+            ...getDefaultWorkspaceSession(),
+            tabsByWorktree: {
+              [localWorktreeId]: [
+                {
+                  ...remoteOnlyTab,
+                  id: 'tab-stale-local',
+                  ptyId: 'pty-stale-local',
+                  worktreeId: localWorktreeId
+                }
+              ],
+              [remoteOnlyWorktreeId]: [remoteOnlyTab]
+            },
+            terminalLayoutsByTabId: {
+              'tab-remote-only': {
+                root: { type: 'leaf', leafId: 'leaf-remote-only' },
+                activeLeafId: 'leaf-remote-only',
+                expandedLeafId: null,
+                ptyIdsByLeafId: { 'leaf-remote-only': 'pty-remote-only' }
+              }
+            },
+            remoteSessionIdsByTabId: {
+              'tab-remote-only': 'pty-remote-only'
+            }
+          }
+        }
+      }
+      if (method === 'workspace.patch') {
+        return {
+          ok: true,
+          snapshot: {
+            namespace: params.namespace,
+            revision: 8,
+            updatedAt: 8,
+            session: (params.patch as { session: WorkspaceSessionState }).session
+          }
+        }
+      }
+      throw new Error(`Unexpected method: ${method}`)
+    })
+    registerRemoteWorkspaceHandlers(store as never)
+
+    const handler = handlers.get('remoteWorkspace:setForConnectedTargets')
+    await handler?.(null, {
+      session: {
+        ...getDefaultWorkspaceSession(),
+        tabsByWorktree: {}
+      },
+      hydratedTargetIds: [target.id],
+      targetScopes: {
+        [target.id]: { worktreePaths: ['/repo'] }
+      }
+    })
+
+    const patchCall = mux.request.mock.calls.find(([method]) => method === 'workspace.patch')
+    expect(patchCall).toBeDefined()
+    if (!patchCall) {
+      throw new Error('workspace.patch was not called')
+    }
+    const patchSession = (patchCall[1].patch as { session: WorkspaceSessionState }).session
+    expect(patchSession.tabsByWorktree[localWorktreeId]).toBeUndefined()
+    expect(patchSession.tabsByWorktree[remoteOnlyWorktreeId]).toEqual([remoteOnlyTab])
+    expect(patchSession.remoteSessionIdsByTabId?.['tab-remote-only']).toBe('pty-remote-only')
+  })
+
+  it('re-merges scoped pushes against the fresh snapshot after stale revision', async () => {
+    const { registerRemoteWorkspaceHandlers } = await import('./remote-workspace')
+    const store = createStore()
+    const localWorktreeId = `${remoteRepo.id}::/repo`
+    const staleRemoteWorktreeId = 'repo-other::/other'
+    const freshRemoteWorktreeId = 'repo-fresh::/fresh'
+    const staleRemoteTab = {
+      id: 'tab-stale-remote',
+      ptyId: 'pty-stale-remote',
+      worktreeId: staleRemoteWorktreeId,
+      title: 'Stale remote',
+      customTitle: null,
+      color: null,
+      sortOrder: 0,
+      createdAt: 1
+    }
+    const freshRemoteTab = {
+      ...staleRemoteTab,
+      id: 'tab-fresh-remote',
+      ptyId: 'pty-fresh-remote',
+      worktreeId: freshRemoteWorktreeId,
+      title: 'Fresh remote'
+    }
+    let patchCount = 0
+    mux.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'workspace.get') {
+        return {
+          namespace: params.namespace,
+          revision: 7,
+          updatedAt: 7,
+          session: {
+            ...getDefaultWorkspaceSession(),
+            tabsByWorktree: { [staleRemoteWorktreeId]: [staleRemoteTab] }
+          }
+        }
+      }
+      if (method === 'workspace.patch') {
+        patchCount += 1
+        if (patchCount === 1) {
+          return {
+            ok: false,
+            reason: 'stale-revision',
+            snapshot: {
+              namespace: params.namespace,
+              revision: 8,
+              updatedAt: 8,
+              session: {
+                ...getDefaultWorkspaceSession(),
+                tabsByWorktree: { [freshRemoteWorktreeId]: [freshRemoteTab] }
+              }
+            }
+          }
+        }
+        return {
+          ok: true,
+          snapshot: {
+            namespace: params.namespace,
+            revision: 9,
+            updatedAt: 9,
+            session: (params.patch as { session: WorkspaceSessionState }).session
+          }
+        }
+      }
+      throw new Error(`Unexpected method: ${method}`)
+    })
+    registerRemoteWorkspaceHandlers(store as never)
+
+    const handler = handlers.get('remoteWorkspace:setForConnectedTargets')
+    await handler?.(null, {
+      session: {
+        ...getDefaultWorkspaceSession(),
+        tabsByWorktree: {}
+      },
+      hydratedTargetIds: [target.id],
+      targetScopes: {
+        [target.id]: { worktreePaths: ['/repo'] }
+      }
+    })
+
+    const patchCalls = mux.request.mock.calls.filter(([method]) => method === 'workspace.patch')
+    expect(patchCalls).toHaveLength(2)
+    const retrySession = (patchCalls[1]![1].patch as { session: WorkspaceSessionState }).session
+    expect(retrySession.tabsByWorktree[localWorktreeId]).toBeUndefined()
+    expect(retrySession.tabsByWorktree[staleRemoteWorktreeId]).toBeUndefined()
+    expect(retrySession.tabsByWorktree[freshRemoteWorktreeId]).toEqual([freshRemoteTab])
   })
 })

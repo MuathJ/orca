@@ -198,6 +198,8 @@ export type PtyTransport = {
     /** Daemon session ID for reattach. When provided, the daemon reconnects
      *  to an existing session instead of creating a new one. */
     sessionId?: string
+    /** Set false when the caller owns a short retry loop for SSH provider startup. */
+    waitForProviderRegistration?: boolean
     callbacks: {
       onConnect?: () => void
       onDisconnect?: () => void

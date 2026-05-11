@@ -371,6 +371,15 @@ export type TerminalLayoutSnapshot = {
   titlesByLeafId?: Record<string, string>
 }
 
+export type AgentResumeProvider = 'claude' | 'codex'
+
+export type AgentResumeBinding = {
+  provider: AgentResumeProvider
+  sessionId: string
+  cwd: string | null
+  updatedAt: number
+}
+
 /** Minimal subset of OpenFile persisted across restarts.
  *  Only edit-mode files are saved — diffs, conflict reviews, and other
  *  transient views are reconstructed on demand from git state. */
@@ -426,6 +435,10 @@ export type WorkspaceSessionState = {
    *  shutdown from renderer state so remote PTYs can be reattached via
    *  the relay's pty.attach RPC on startup. */
   remoteSessionIdsByTabId?: Record<string, string>
+  /** Maps `${tabId}:${paneId}` to provider-owned agent sessions. Used only
+   *  after a remote PTY is gone, so Orca can resume Claude/Codex without
+   *  storing the full terminal transcript. */
+  agentResumeBindingsByPaneKey?: Record<string, AgentResumeBinding>
   /** Per-worktree focus-recency timestamps used by the Cmd+J empty-query
    *  ordering. Separate from worktree.lastActivityAt (background signal)
    *  and worktreeNavHistory (Back/Forward stack). See

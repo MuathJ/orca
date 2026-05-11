@@ -179,6 +179,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
         const nextLayouts = { ...s.terminalLayoutsByTabId }
         const nextPtyIdsByTabId = { ...s.ptyIdsByTabId }
         const nextRuntimePaneTitlesByTabId = { ...s.runtimePaneTitlesByTabId }
+        const nextAgentResumeBindingsByPaneKey = { ...s.agentResumeBindingsByPaneKey }
         const nextSuppressedPtyExitIds = { ...s.suppressedPtyExitIds }
         for (const wId of worktreeIds) {
           delete nextTabs[wId]
@@ -187,6 +188,11 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
           delete nextLayouts[tabId]
           delete nextPtyIdsByTabId[tabId]
           delete nextRuntimePaneTitlesByTabId[tabId]
+          for (const paneKey of Object.keys(nextAgentResumeBindingsByPaneKey)) {
+            if (paneKey.startsWith(`${tabId}:`)) {
+              delete nextAgentResumeBindingsByPaneKey[paneKey]
+            }
+          }
         }
         for (const ptyId of killedPtyIds) {
           nextSuppressedPtyExitIds[ptyId] = true
@@ -228,6 +234,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
           tabsByWorktree: nextTabs,
           ptyIdsByTabId: nextPtyIdsByTabId,
           runtimePaneTitlesByTabId: nextRuntimePaneTitlesByTabId,
+          agentResumeBindingsByPaneKey: nextAgentResumeBindingsByPaneKey,
           suppressedPtyExitIds: nextSuppressedPtyExitIds,
           terminalLayoutsByTabId: nextLayouts,
           activeTabId: s.activeTabId && killedTabIds.has(s.activeTabId) ? null : s.activeTabId,

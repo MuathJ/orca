@@ -255,6 +255,20 @@ describe('mergeRemoteWorkspaceSession', () => {
         'term-remote': 'pty-remote',
         'term-local': 'pty-local'
       },
+      agentResumeBindingsByPaneKey: {
+        'term-remote:1': {
+          provider: 'claude',
+          sessionId: 'claude-remote',
+          cwd: '/remote',
+          updatedAt: 1
+        },
+        'term-local:1': {
+          provider: 'codex',
+          sessionId: 'codex-local',
+          cwd: '/local',
+          updatedAt: 2
+        }
+      },
       lastVisitedAtByWorktreeId: {
         [remoteWorktreeId]: 1,
         [localWorktreeId]: 2
@@ -317,6 +331,9 @@ describe('mergeRemoteWorkspaceSession', () => {
     })
     expect(merged.remoteSessionIdsByTabId).toEqual({
       'term-local': current.remoteSessionIdsByTabId?.['term-local']
+    })
+    expect(merged.agentResumeBindingsByPaneKey).toEqual({
+      'term-local:1': current.agentResumeBindingsByPaneKey?.['term-local:1']
     })
     expect(merged.lastVisitedAtByWorktreeId).toEqual({
       [localWorktreeId]: current.lastVisitedAtByWorktreeId?.[localWorktreeId]

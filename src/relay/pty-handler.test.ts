@@ -325,6 +325,17 @@ describe('PtyHandler', () => {
     expect(onExpire).toHaveBeenCalledTimes(1)
   })
 
+  it('does not expire when grace timer is disabled', () => {
+    handler.dispose()
+    handler = new PtyHandler(dispatcher as unknown as RelayDispatcher, 0)
+
+    const onExpire = vi.fn()
+    handler.startGraceTimer(onExpire)
+
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000)
+    expect(onExpire).not.toHaveBeenCalled()
+  })
+
   it('cancelGraceTimer prevents expiration', async () => {
     mockPtySpawn.mockReturnValue({
       ...mockPtyInstance,

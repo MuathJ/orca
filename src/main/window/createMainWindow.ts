@@ -671,6 +671,7 @@ export function createMainWindow(
   ipcMain.handle(isMaximizedChannel, onIsMaximized)
 
   ipcMain.on(confirmCloseChannel, onConfirmClose)
+  const windowWebContents = mainWindow.webContents
   mainWindow.on('closed', () => {
     // Why: default-deny the Cmd+B carve-out after the window is gone so a
     // stale-true flag can't leak past subsequent state transitions. Paired
@@ -684,7 +685,9 @@ export function createMainWindow(
     ipcMain.removeHandler(isMaximizedChannel)
     ipcMain.removeListener(confirmCloseChannel, onConfirmClose)
     ipcMain.removeListener(markdownFocusChannel, onMarkdownEditorFocused)
-    mainWindow.webContents.removeListener('context-menu', onMainContextMenu)
+    if (!windowWebContents.isDestroyed()) {
+      windowWebContents.removeListener('context-menu', onMainContextMenu)
+    }
     app.removeListener('before-quit', freezeBoundsOnQuit)
   })
 

@@ -791,6 +791,60 @@ describe('registerPtyHandlers', () => {
         expect(piBuildPtyEnvMock).not.toHaveBeenCalled()
       })
     })
+
+    it('waits briefly for restored SSH session providers to register before spawning', async () => {
+      const sshSpawn = vi.fn(async () => ({ id: 'restored-ssh-pty' }))
+      handlers.clear()
+      registerPtyHandlers(mainWindow as never)
+
+      const spawnPromise = handlers.get('pty:spawn')!(null, {
+        cols: 80,
+        rows: 24,
+        connectionId: 'ssh-late',
+        sessionId: 'pty-restored'
+      }) as Promise<{ id: string }>
+
+      await Promise.resolve()
+      expect(sshSpawn).not.toHaveBeenCalled()
+
+      try {
+        registerSshPtyProvider('ssh-late', {
+          spawn: sshSpawn,
+          write: vi.fn(),
+          resize: vi.fn(),
+          shutdown: vi.fn(),
+          sendSignal: vi.fn(),
+          getCwd: vi.fn(),
+          getInitialCwd: vi.fn(),
+          clearBuffer: vi.fn(),
+          acknowledgeDataEvent: vi.fn(),
+          hasChildProcesses: vi.fn(),
+          getForegroundProcess: vi.fn(),
+          serialize: vi.fn(),
+          revive: vi.fn(),
+          onData: vi.fn(() => () => {}),
+          onReplay: vi.fn(() => () => {}),
+          onExit: vi.fn(() => () => {}),
+          listProcesses: vi.fn(async () => []),
+          attach: vi.fn(),
+          getDefaultShell: vi.fn(),
+          getProfiles: vi.fn()
+        } as never)
+
+        await expect(spawnPromise).resolves.toEqual(
+          expect.objectContaining({ id: 'restored-ssh-pty' })
+        )
+        expect(sshSpawn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cols: 80,
+            rows: 24,
+            sessionId: 'pty-restored'
+          })
+        )
+      } finally {
+        unregisterSshPtyProvider('ssh-late')
+      }
+    })
   })
 
   it('lists sessions from both local and SSH providers', async () => {

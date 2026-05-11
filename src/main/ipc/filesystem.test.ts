@@ -25,7 +25,10 @@ const {
   discardChangesMock,
   listWorktreesMock,
   getSshFilesystemProviderMock,
-  getSshGitProviderMock
+  getSshGitProviderMock,
+  waitForSshFilesystemProviderMock,
+  waitForSshGitProviderMock,
+  getSshConnectionManagerMock
 } = vi.hoisted(() => ({
   handleMock: vi.fn(),
   trashItemMock: vi.fn(),
@@ -48,7 +51,10 @@ const {
   discardChangesMock: vi.fn(),
   listWorktreesMock: vi.fn(),
   getSshFilesystemProviderMock: vi.fn(),
-  getSshGitProviderMock: vi.fn()
+  getSshGitProviderMock: vi.fn(),
+  waitForSshFilesystemProviderMock: vi.fn(),
+  waitForSshGitProviderMock: vi.fn(),
+  getSshConnectionManagerMock: vi.fn()
 }))
 
 vi.mock('electron', () => ({
@@ -88,11 +94,17 @@ vi.mock('../git/worktree', () => ({
 }))
 
 vi.mock('../providers/ssh-filesystem-dispatch', () => ({
-  getSshFilesystemProvider: getSshFilesystemProviderMock
+  getSshFilesystemProvider: getSshFilesystemProviderMock,
+  waitForSshFilesystemProvider: waitForSshFilesystemProviderMock
 }))
 
 vi.mock('../providers/ssh-git-dispatch', () => ({
-  getSshGitProvider: getSshGitProviderMock
+  getSshGitProvider: getSshGitProviderMock,
+  waitForSshGitProvider: waitForSshGitProviderMock
+}))
+
+vi.mock('./ssh', () => ({
+  getSshConnectionManager: getSshConnectionManagerMock
 }))
 
 import { registerFilesystemHandlers } from './filesystem'
@@ -165,7 +177,10 @@ describe('registerFilesystemHandlers', () => {
       discardChangesMock,
       listWorktreesMock,
       getSshFilesystemProviderMock,
-      getSshGitProviderMock
+      getSshGitProviderMock,
+      waitForSshFilesystemProviderMock,
+      waitForSshGitProviderMock,
+      getSshConnectionManagerMock
     ]) {
       mock.mockReset()
     }
@@ -179,6 +194,15 @@ describe('registerFilesystemHandlers', () => {
     invalidateAuthorizedRootsCache()
 
     realpathMock.mockImplementation(async (targetPath: string) => targetPath)
+    waitForSshFilesystemProviderMock.mockImplementation((connectionId: string) =>
+      Promise.resolve(getSshFilesystemProviderMock(connectionId) ?? null)
+    )
+    waitForSshGitProviderMock.mockImplementation((connectionId: string) =>
+      Promise.resolve(getSshGitProviderMock(connectionId) ?? null)
+    )
+    getSshConnectionManagerMock.mockReturnValue({
+      getState: vi.fn(() => ({ status: 'connected' }))
+    })
     listWorktreesMock.mockResolvedValue([
       {
         path: WORKTREE_FEATURE_PATH,
@@ -239,6 +263,38 @@ describe('registerFilesystemHandlers', () => {
 
     expect(readdirMock).toHaveBeenCalledWith(canonicalWorktreePath, { withFileTypes: true })
     expect(listWorktreesMock).not.toHaveBeenCalled()
+  })
+
+  it('waits for SSH filesystem provider registration before readDir', async () => {
+    const readDir = vi
+      .fn()
+      .mockResolvedValue([{ name: 'src', isDirectory: true, isSymlink: false }])
+    getSshFilesystemProviderMock.mockReturnValue(undefined)
+    waitForSshFilesystemProviderMock.mockResolvedValue({ readDir })
+
+    registerFilesystemHandlers(store as never)
+
+    await expect(
+      handlers.get('fs:readDir')!(null, { dirPath: '/remote/repo', connectionId: 'conn-1' })
+    ).resolves.toEqual([{ name: 'src', isDirectory: true, isSymlink: false }])
+
+    expect(waitForSshFilesystemProviderMock).toHaveBeenCalledWith('conn-1')
+    expect(readDir).toHaveBeenCalledWith('/remote/repo')
+  })
+
+  it('fails fast for SSH readDir when the target is offline', async () => {
+    getSshFilesystemProviderMock.mockReturnValue(undefined)
+    getSshConnectionManagerMock.mockReturnValue({
+      getState: vi.fn(() => ({ status: 'disconnected' }))
+    })
+
+    registerFilesystemHandlers(store as never)
+
+    await expect(
+      handlers.get('fs:readDir')!(null, { dirPath: '/remote/repo', connectionId: 'conn-1' })
+    ).rejects.toThrow('No filesystem provider for connection "conn-1"')
+
+    expect(waitForSshFilesystemProviderMock).not.toHaveBeenCalled()
   })
 
   it('allows deletePath when a registered worktree parent resolves to a macOS canonical alias', async () => {
@@ -415,6 +471,42 @@ describe('registerFilesystemHandlers', () => {
     // Why: validateGitRelativeFilePath uses path.relative() which produces
     // platform-specific separators (backslashes on Windows).
     expect(stageFileMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, path.join('src', 'file.ts'))
+  })
+
+  it('waits for SSH git provider registration before git status', async () => {
+    const getStatus = vi.fn().mockResolvedValue({ entries: [] })
+    getSshGitProviderMock.mockReturnValue(undefined)
+    waitForSshGitProviderMock.mockResolvedValue({ getStatus })
+
+    registerFilesystemHandlers(store as never)
+
+    await expect(
+      handlers.get('git:status')!(null, {
+        worktreePath: '/remote/repo',
+        connectionId: 'conn-1'
+      })
+    ).resolves.toEqual({ entries: [] })
+
+    expect(waitForSshGitProviderMock).toHaveBeenCalledWith('conn-1')
+    expect(getStatus).toHaveBeenCalledWith('/remote/repo')
+  })
+
+  it('fails fast for SSH git status when the target is offline', async () => {
+    getSshGitProviderMock.mockReturnValue(undefined)
+    getSshConnectionManagerMock.mockReturnValue({
+      getState: vi.fn(() => ({ status: 'disconnected' }))
+    })
+
+    registerFilesystemHandlers(store as never)
+
+    await expect(
+      handlers.get('git:status')!(null, {
+        worktreePath: '/remote/repo',
+        connectionId: 'conn-1'
+      })
+    ).rejects.toThrow('No git provider for connection "conn-1"')
+
+    expect(waitForSshGitProviderMock).not.toHaveBeenCalled()
   })
 
   it('uses worktree roots seeded by worktrees:list without rebuilding the cache', async () => {

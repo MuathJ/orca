@@ -182,6 +182,13 @@ const browserHistoryEntrySchema = z.object({
   visitCount: z.number()
 })
 
+const agentResumeBindingSchema = z.object({
+  provider: z.enum(['claude', 'codex']),
+  sessionId: z.string().min(1).max(200),
+  cwd: z.string().nullable(),
+  updatedAt: z.number().finite().nonnegative()
+})
+
 // ─── Workspace session ──────────────────────────────────────────────
 
 export const workspaceSessionStateSchema: z.ZodType<WorkspaceSessionState> = z.object({
@@ -205,6 +212,7 @@ export const workspaceSessionStateSchema: z.ZodType<WorkspaceSessionState> = z.o
   activeGroupIdByWorktree: z.record(z.string(), z.string()).optional(),
   activeConnectionIdsAtShutdown: z.array(z.string()).optional(),
   remoteSessionIdsByTabId: z.record(z.string(), z.string()).optional(),
+  agentResumeBindingsByPaneKey: z.record(z.string(), agentResumeBindingSchema).optional(),
   // Why: the sort comparator in order-empty-query-worktrees.ts would produce
   // NaN (undefined sort order) if a corrupted session file carried NaN or
   // Infinity here. Parse leniently: drop individual bad entries rather than

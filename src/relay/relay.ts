@@ -42,7 +42,8 @@ function parseArgs(argv: string[]): {
     if (argv[i] === '--grace-time' && argv[i + 1]) {
       const parsed = parseInt(argv[i + 1], 10)
       // Why: the CLI flag is in seconds for ergonomics, but internally we track ms.
-      if (!isNaN(parsed) && parsed > 0) {
+      // Why: 0 disables expiry for remote-workspace-owned relays.
+      if (!isNaN(parsed) && parsed >= 0) {
         graceTimeMs = parsed * 1000
       }
       i++

@@ -31,6 +31,7 @@ type WorkspaceSessionSnapshot = Pick<
   | 'repos'
   | 'worktreesByRepo'
   | 'lastKnownRelayPtyIdByTabId'
+  | 'agentResumeBindingsByPaneKey'
   | 'lastVisitedAtByWorktreeId'
 >
 
@@ -153,6 +154,11 @@ export function buildWorkspaceSessionPayload(
   // here avoids a sync IPC round-trip during beforeunload, which is fragile
   // (can be dropped by Chromium under shutdown time pressure).
   const remoteSessionIdsByTabId: Record<string, string> = {}
+  const validTerminalTabIds = new Set(
+    Object.values(snapshot.tabsByWorktree)
+      .flat()
+      .map((tab) => tab.id)
+  )
   for (const [worktreeId, tabs] of Object.entries(snapshot.tabsByWorktree)) {
     const worktree = Object.values(snapshot.worktreesByRepo)
       .flat()
@@ -168,6 +174,12 @@ export function buildWorkspaceSessionPayload(
       }
     }
   }
+  const agentResumeBindingsByPaneKey = Object.fromEntries(
+    Object.entries(snapshot.agentResumeBindingsByPaneKey ?? {}).filter(([paneKey]) => {
+      const tabId = paneKey.split(':')[0]
+      return Boolean(tabId && validTerminalTabIds.has(tabId))
+    })
+  )
 
   // Why: pendingActivationSpawn is documented on TerminalTab as a transient
   // renderer-only handoff between setActiveWorktree and the next updateTabPtyId
@@ -218,6 +230,10 @@ export function buildWorkspaceSessionPayload(
     activeConnectionIdsAtShutdown: connectedTargetIds.length > 0 ? connectedTargetIds : undefined,
     remoteSessionIdsByTabId:
       Object.keys(remoteSessionIdsByTabId).length > 0 ? remoteSessionIdsByTabId : undefined,
+    agentResumeBindingsByPaneKey:
+      Object.keys(agentResumeBindingsByPaneKey).length > 0
+        ? agentResumeBindingsByPaneKey
+        : undefined,
     // Why: per-worktree focus-recency for Cmd+J's empty-query ordering.
     // Omit when empty so sessions written by builds that never stamped
     // anything don't bloat the payload. See
