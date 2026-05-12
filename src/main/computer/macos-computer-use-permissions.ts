@@ -1,9 +1,9 @@
-import { spawn, spawnSync } from 'child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { execFileSync, spawn, spawnSync } from 'child_process'
 import { RuntimeClientError } from './runtime-client-error'
-import { resolveMacOSComputerUseAppPath } from './macos-native-provider-paths'
+import {
+  resolveMacOSComputerUseAppPath,
+  resolveMacOSComputerUseExecutablePath
+} from './macos-native-provider-paths'
 import type {
   ComputerUsePermissionId,
   ComputerUsePermissionSetupResult,
@@ -106,40 +106,20 @@ export function getComputerUsePermissionStatus(): ComputerUsePermissionStatusRes
 function readPermissionStatusFromHelperApp(
   helperAppPath: string
 ): Partial<Record<ComputerUsePermissionId, ComputerUsePermissionStatus>> {
-  const directory = mkdtempSync(join(tmpdir(), 'orca-computer-permissions-'))
-  const statusPath = join(directory, 'status.json')
-  try {
-    // Why: TCC can attribute direct executable probes to the parent shell;
-    // launch the app bundle so status uses the same identity as real actions.
-    const result = spawnSync(
-      '/usr/bin/open',
-      ['-n', helperAppPath, '--args', '--permission-status-file', statusPath],
-      { stdio: 'ignore' }
+  const executablePath = resolveMacOSComputerUseExecutablePath()
+  if (!executablePath) {
+    throw new RuntimeClientError(
+      'accessibility_error',
+      `${helperAppPath}/Contents/MacOS/orca-computer-use-macos was not found`
     )
-    if (result.error) {
-      throw result.error
-    }
-    waitForStatusFile(statusPath)
-    return JSON.parse(readFileSync(statusPath, 'utf8')) as Partial<
-      Record<ComputerUsePermissionId, ComputerUsePermissionStatus>
-    >
-  } finally {
-    rmSync(directory, { force: true, recursive: true })
   }
-}
-
-function waitForStatusFile(statusPath: string): void {
-  const deadline = Date.now() + 3_000
-  while (Date.now() < deadline) {
-    if (existsSync(statusPath)) {
-      return
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
-  }
-  throw new RuntimeClientError(
-    'action_timeout',
-    'Orca Computer Use.app did not report permission status'
-  )
+  // Why: launching the nested helper via LaunchServices can make TCC evaluate
+  // Orca.app as responsible; the signed helper executable owns this grant.
+  const output = execFileSync(executablePath, ['--permission-status'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore']
+  })
+  return JSON.parse(output) as Partial<Record<ComputerUsePermissionId, ComputerUsePermissionStatus>>
 }
 
 function nextPermissionStep(

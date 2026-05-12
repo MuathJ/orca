@@ -21,7 +21,10 @@ import {
   type PendingNativeRequest,
   writeNativeProviderLine
 } from './macos-native-provider-contract'
-import { resolveMacOSComputerUseAppPath } from './macos-native-provider-paths'
+import {
+  resolveMacOSComputerUseAppPath,
+  resolveMacOSComputerUseExecutablePath
+} from './macos-native-provider-paths'
 import { connectMacOSProviderSocket } from './macos-native-provider-socket'
 import { RuntimeClientError } from './runtime-client-error'
 
@@ -90,11 +93,11 @@ export class MacOSNativeProviderClient {
   }
   private async send(method: NativeMethod, params: unknown): Promise<unknown> {
     const id = this.nextId++
-    const helperAppPath = resolveMacOSComputerUseAppPath()
-    if (!helperAppPath) {
+    const helperExecutablePath = resolveMacOSComputerUseExecutablePath()
+    if (!helperExecutablePath) {
       throw new RuntimeClientError('accessibility_error', 'Orca Computer Use.app was not found')
     }
-    const transport = await this.ensureSocketStarted(helperAppPath)
+    const transport = await this.ensureSocketStarted(helperExecutablePath)
     const token = this.socketToken
     const line = `${JSON.stringify({ id, method, params, token })}\n`
     const result = new Promise<unknown>((resolve, reject) => {
@@ -158,43 +161,35 @@ export class MacOSNativeProviderClient {
       `native macOS provider does not support ${String(group)}.${capability}`
     )
   }
-  private async ensureSocketStarted(helperAppPath: string): Promise<net.Socket> {
+  private async ensureSocketStarted(helperExecutablePath: string): Promise<net.Socket> {
     if (this.socket && !this.socket.destroyed) {
       return this.socket
     }
     if (this.socketStartPromise) {
       return await this.socketStartPromise
     }
-    this.socketStartPromise = this.startSocket(helperAppPath)
+    this.socketStartPromise = this.startSocket(helperExecutablePath)
     try {
       return await this.socketStartPromise
     } finally {
       this.socketStartPromise = null
     }
   }
-  private async startSocket(helperAppPath: string): Promise<net.Socket> {
+  private async startSocket(helperExecutablePath: string): Promise<net.Socket> {
     this.socketDirectory = mkdtempSync(join(tmpdir(), 'orca-computer-use-'))
     chmodSync(this.socketDirectory, 0o700)
     this.socketPath = join(this.socketDirectory, 'provider.sock')
     this.socketToken = randomUUID()
     this.socketTokenPath = join(this.socketDirectory, 'provider.token')
     writeFileSync(this.socketTokenPath, this.socketToken, { encoding: 'utf8', mode: 0o600 })
-    // Why: macOS TCC attaches Accessibility/Screen Recording to the helper
-    // app bundle; direct child-process stdio cannot reliably read AX windows.
-    const opener = spawn(
-      '/usr/bin/open',
-      [
-        '-n',
-        helperAppPath,
-        '--args',
-        '--agent',
-        this.socketPath,
-        '--token-file',
-        this.socketTokenPath
-      ],
+    // Why: launching the nested helper via LaunchServices can make TCC evaluate
+    // Orca.app as responsible; the signed helper executable owns this grant.
+    const provider = spawn(
+      helperExecutablePath,
+      ['--agent', this.socketPath, '--token-file', this.socketTokenPath],
       { detached: true, stdio: 'ignore' }
     )
-    opener.unref()
+    provider.unref()
     try {
       const socket = await connectMacOSProviderSocket(this.socketPath, HELPER_CONNECT_TIMEOUT_MS)
       socket.setEncoding('utf8')

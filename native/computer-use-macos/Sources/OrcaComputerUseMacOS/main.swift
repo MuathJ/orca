@@ -2592,6 +2592,8 @@ private final class PermissionDragAssistantView: NSView {
 private final class DraggableAppTile: NSView, NSDraggingSource {
     private let appURL: URL
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
     init(appURL: URL) {
         self.appURL = appURL
         super.init(frame: .zero)
