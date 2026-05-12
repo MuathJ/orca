@@ -49,6 +49,7 @@ import {
 import { useGlobalFileDrop } from './hooks/useGlobalFileDrop'
 import { registerUpdaterBeforeUnloadBypass } from './lib/updater-beforeunload'
 import { buildWorkspaceSessionPayload } from './lib/workspace-session'
+import { createSessionWriteSubscriber } from './lib/session-write-subscriber'
 import { applyDocumentTheme } from './lib/document-theme'
 import { isEditableTarget } from './lib/editable-target'
 import {
@@ -416,25 +417,10 @@ function App(): React.JSX.Element {
   // Using a Zustand subscribe() outside React removes ~15 subscriptions from
   // App's render cycle, eliminating re-renders on every tab/file/browser change.
   useEffect(() => {
-    let timer: number | null = null
-    const unsub = useAppStore.subscribe((state) => {
-      if (!state.workspaceSessionReady) {
-        return
-      }
-      if (timer) {
-        window.clearTimeout(timer)
-      }
-      timer = window.setTimeout(() => {
-        timer = null
-        void window.api.session.set(buildWorkspaceSessionPayload(state))
-      }, 150)
+    return createSessionWriteSubscriber({
+      store: useAppStore,
+      persist: (payload) => void window.api.session.set(payload)
     })
-    return () => {
-      unsub()
-      if (timer) {
-        window.clearTimeout(timer)
-      }
-    }
   }, [])
 
   // On shutdown, capture terminal scrollback buffers and flush to disk.
