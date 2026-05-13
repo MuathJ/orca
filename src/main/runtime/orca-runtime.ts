@@ -25,6 +25,7 @@ import type {
 } from '../../shared/types'
 import { isFolderRepo } from '../../shared/repo-kind'
 import { buildSetupRunnerCommand } from '../../shared/setup-runner-command'
+import { FIRST_PANE_ID } from '../../shared/pane-key'
 import {
   DESKTOP_PROTOCOL_VERSION,
   MIN_COMPATIBLE_MOBILE_VERSION
@@ -231,6 +232,10 @@ type RuntimeLeafRecord = RuntimeSyncedLeaf & {
 type RuntimePtyWorktreeRecord = {
   ptyId: string
   worktreeId: string
+  // Why: background CLI PTYs can outlive a failed renderer reveal. Preserve the
+  // spawn-time tab/pane identity so later reveals can adopt under the env key.
+  tabId: string | null
+  paneKey: string | null
   connected: boolean
   lastExitCode: number | null
   lastAgentStatus: AgentStatus | null
@@ -310,7 +315,7 @@ type RuntimeNotifier = {
   createTerminal(worktreeId: string, opts: { command?: string; title?: string }): void
   revealTerminalSession?(
     worktreeId: string,
-    opts: { ptyId: string; title?: string | null; activate?: boolean }
+    opts: { ptyId: string; title?: string | null; activate?: boolean; tabId?: string }
   ):
     | Promise<{ tabId: string; title?: string | null }>
     | { tabId: string; title?: string | null }
@@ -843,7 +848,9 @@ export class OrcaRuntimeService {
         this.recordPtyWorktree(leaf.ptyId, leaf.worktreeId, {
           connected: true,
           lastOutputAt: existing?.ptyId === leaf.ptyId ? existing.lastOutputAt : null,
-          preview: existing?.ptyId === leaf.ptyId ? existing.preview : ''
+          preview: existing?.ptyId === leaf.ptyId ? existing.preview : '',
+          tabId: leaf.tabId,
+          paneKey: `${leaf.tabId}:${leaf.paneRuntimeId}`
         })
       }
 
@@ -1184,7 +1191,9 @@ export class OrcaRuntimeService {
       this.recordPtyWorktree(ptyId, leaf.worktreeId, {
         connected: true,
         lastOutputAt: pty?.lastOutputAt ?? at,
-        preview: pty?.preview ?? leaf.preview
+        preview: pty?.preview ?? leaf.preview,
+        tabId: leaf.tabId,
+        paneKey: `${leaf.tabId}:${leaf.paneRuntimeId}`
       })
       leaf.connected = true
       leaf.writable = this.graphStatus === 'ready'
@@ -4410,12 +4419,27 @@ export class OrcaRuntimeService {
       const worktree = await this.resolveWorktreeSelector(worktreeSelector)
       const repo = this.store?.getRepo(worktree.repoId)
       const preAllocatedHandle = this.createPreAllocatedTerminalHandle()
+      // Why: mint tabId in main before spawn so paneKey is known at PTY env
+      // build time. Hook-based agent status (Claude/Codex/Cursor/Gemini) keys
+      // off `${tabId}:${paneId}` — without these vars set on the PTY, the
+      // hook payload arrives with an empty paneKey and the renderer cannot
+      // attribute the event. paneId is hard-coded to 1 because this path
+      // never splits and the renderer's nextPaneId starts at 1 for a fresh
+      // tab. See docs/cli-terminal-hook-pane-key.md.
+      const tabId = randomUUID()
+      const paneKey = `${tabId}:${FIRST_PANE_ID}`
+      const env = {
+        ...opts.env,
+        ORCA_PANE_KEY: paneKey,
+        ORCA_TAB_ID: tabId,
+        ORCA_WORKTREE_ID: worktree.id
+      }
       const result = await this.ptyController.spawn({
         cols: 120,
         rows: 40,
         cwd: worktree.path,
         command: opts.command,
-        env: opts.env,
+        env,
         connectionId: repo?.connectionId ?? null,
         worktreeId: worktree.id,
         preAllocatedHandle
@@ -4425,6 +4449,8 @@ export class OrcaRuntimeService {
       const pty = this.getOrCreatePtyWorktreeRecord(result.id)
       if (pty) {
         pty.title = opts.title ?? null
+        pty.tabId = tabId
+        pty.paneKey = paneKey
       }
       const handle = pty ? this.issuePtyHandle(pty) : preAllocatedHandle
       let surface: RuntimeTerminalCreate['surface'] = 'background'
@@ -4432,10 +4458,13 @@ export class OrcaRuntimeService {
         try {
           // Why: after the PTY is spawned, renderer tab adoption is best-effort;
           // failing here must not strand a live process without returning a handle.
+          // Pass the pre-minted tabId so the renderer adopts under the same id
+          // already baked into the PTY env — keeps paneKey hook attribution intact.
           await this.notifier.revealTerminalSession(worktree.id, {
             ptyId: result.id,
             title: opts.title ?? null,
-            activate: false
+            activate: false,
+            tabId
           })
           surface = 'visible'
         } catch (err) {
@@ -4718,11 +4747,12 @@ export class OrcaRuntimeService {
       }
       const revealed = await this.notifier?.revealTerminalSession?.(pty.pty.worktreeId, {
         ptyId: pty.pty.ptyId,
-        title: pty.pty.title ?? pty.pty.lastOscTitle
+        title: pty.pty.title ?? pty.pty.lastOscTitle,
+        ...(pty.pty.tabId !== null ? { tabId: pty.pty.tabId } : {})
       })
       return {
         handle,
-        tabId: revealed?.tabId ?? pty.record.tabId,
+        tabId: revealed?.tabId ?? pty.pty.tabId ?? pty.record.tabId,
         worktreeId: pty.pty.worktreeId
       }
     }
@@ -5070,13 +5100,17 @@ export class OrcaRuntimeService {
   private recordPtyWorktree(
     ptyId: string,
     worktreeId: string,
-    state: Partial<Pick<RuntimePtyWorktreeRecord, 'connected' | 'lastOutputAt' | 'preview'>> = {}
+    state: Partial<
+      Pick<RuntimePtyWorktreeRecord, 'connected' | 'lastOutputAt' | 'preview' | 'tabId' | 'paneKey'>
+    > = {}
   ): RuntimePtyWorktreeRecord {
     let pty = this.ptysById.get(ptyId)
     if (!pty) {
       pty = {
         ptyId,
         worktreeId,
+        tabId: state.tabId ?? null,
+        paneKey: state.paneKey ?? null,
         connected: state.connected ?? true,
         lastExitCode: null,
         lastAgentStatus: null,
@@ -5094,6 +5128,12 @@ export class OrcaRuntimeService {
     }
 
     pty.worktreeId = worktreeId
+    if (state.tabId !== undefined) {
+      pty.tabId = state.tabId
+    }
+    if (state.paneKey !== undefined) {
+      pty.paneKey = state.paneKey
+    }
     if (state.connected !== undefined) {
       pty.connected = state.connected
     }

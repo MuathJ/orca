@@ -32,6 +32,7 @@ import { setDriverForPty } from '@/lib/pane-manager/mobile-driver-state'
 import { destroyPersistentWebview } from '@/components/browser-pane/webview-registry'
 import { attachMobileMarkdownBridge } from '@/runtime/mobile-markdown-bridge'
 import { detectLanguage } from '@/lib/language-detect'
+import { track } from '@/lib/telemetry'
 
 export { resolveZoomTarget } from './resolve-zoom-target'
 
@@ -233,7 +234,7 @@ export function useIpcEvents(): void {
 
     unsubs.push(
       window.api.ui.onCreateTerminal(
-        ({ requestId, worktreeId, command, title, ptyId, activate }) => {
+        ({ requestId, worktreeId, command, title, ptyId, activate, tabId }) => {
           try {
             const store = useAppStore.getState()
             const shouldActivate = activate !== false
@@ -254,9 +255,24 @@ export function useIpcEvents(): void {
                 ) ??
                 store.createTab(worktreeId, undefined, undefined, {
                   initialPtyId: ptyId,
-                  activate: shouldActivate
+                  activate: shouldActivate,
+                  // Why: tabId hint comes from CLI-spawned PTYs whose env
+                  // already has paneKey=`${tabId}:1` baked in. Adopting the
+                  // tab under the same id keeps hook-event attribution working;
+                  // see docs/cli-terminal-hook-pane-key.md.
+                  ...(tabId !== undefined ? { id: tabId } : {})
                 }))
               : store.createTab(worktreeId)
+            // Why: when an existing tab already owns this ptyId, we reuse it instead of
+            // minting a new one — but the PTY env already carries `paneKey=`${tabId}:1``
+            // from main. If the existing tab id doesn't match the hint, hook attribution
+            // will degrade for that PTY's lifetime. Warn so this is visible during
+            // development; in production this surfaces via `agent_hook_unattributed`.
+            if (tabId !== undefined && tab.id !== tabId) {
+              console.warn(
+                `[onCreateTerminal] tabId hint ${tabId} ignored for ptyId ${ptyId}; existing tab ${tab.id} adopted instead (hook attribution will degrade for this terminal)`
+              )
+            }
             if (shouldActivate) {
               store.setActiveTabType('terminal')
               store.setActiveTab(tab.id)
@@ -974,7 +990,10 @@ export function useIpcEvents(): void {
     // hook callback or an OSC fallback path. Startup pushes are ignored until
     // workspace session hydration finishes; the snapshot pull below replays the
     // main-process cache after tab identity is available.
-    const applyAgentStatus = (data: AgentStatusIpcPayload): void => {
+    const applyAgentStatus = (
+      data: AgentStatusIpcPayload,
+      options?: { replay?: boolean }
+    ): void => {
       const store = useAppStore.getState()
       if (!store.workspaceSessionReady) {
         return
@@ -993,6 +1012,15 @@ export function useIpcEvents(): void {
       }
       const { exists, title } = resolvePaneKey(store, data.paneKey)
       if (!exists) {
+        // Why: empty paneKeys are dropped in main before IPC fanout. Reaching
+        // this branch means a non-empty paneKey escaped without a matching
+        // renderer tab, so track the adoption/routing failure separately.
+        // Skipped during snapshot replay because main's durable cache may
+        // include entries whose tabs were closed before this session — that
+        // reconciliation miss is not a regression signal.
+        if (options?.replay !== true) {
+          track('agent_hook_unattributed', { reason: 'unknown_tab_id' })
+        }
         return
       }
       store.setAgentStatus(data.paneKey, payload, title, {
@@ -1028,7 +1056,7 @@ export function useIpcEvents(): void {
             return
           }
           for (const entry of entries) {
-            applyAgentStatus(entry)
+            applyAgentStatus(entry, { replay: true })
           }
         })
         .catch((err) => {

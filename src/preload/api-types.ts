@@ -1102,6 +1102,7 @@ export type PreloadApi = {
         title?: string
         ptyId?: string
         activate?: boolean
+        tabId?: string
       }) => void
     ) => () => void
     onRequestTerminalCreate: (

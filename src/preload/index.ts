@@ -1866,6 +1866,7 @@ const api = {
         title?: string
         ptyId?: string
         activate?: boolean
+        tabId?: string
       }) => void
     ): (() => void) => {
       const listener = (
@@ -1877,6 +1878,7 @@ const api = {
           title?: string
           ptyId?: string
           activate?: boolean
+          tabId?: string
         }
       ) => callback(data)
       ipcRenderer.on('ui:createTerminal', listener)
