@@ -3,6 +3,7 @@ import type { SshRemotePtyLease, SshTarget } from './ssh-types'
 import type { Automation, AutomationRun } from './automations-types'
 import type { WorkspaceSource } from './telemetry-events'
 import type { GitHubProjectSettings } from './github-project-types'
+import type { VoiceSettings } from './speech-types'
 
 // Re-exported for backward compat with renderer call sites that import
 // `WorkspaceCreateTelemetrySource` from '../../../shared/types'.
@@ -1367,6 +1368,13 @@ export type GlobalSettings = {
      *  false for fresh installs (no first-launch surface). */
     existedBeforeTelemetryRelease: boolean
   }
+  /** Local voice/dictation configuration (Phase 1 voice feature). Optional
+   *  because profiles created before voice landed won't have the key;
+   *  `getDefaultSettings()` hydrates `getDefaultVoiceSettings()` via the
+   *  `{ ...defaults, ...parsed }` merge in persistence.ts. Treat as
+   *  effectively present at runtime — the renderer should still fall back to
+   *  defaults when reading optional sub-fields. */
+  voice?: VoiceSettings
 }
 
 export type GhosttyImportPreview = {

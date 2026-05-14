@@ -136,7 +136,7 @@ import {
   runHook,
   shouldRunSetupForCreate
 } from '../hooks'
-import { REPO_COLORS } from '../../shared/constants'
+import { REPO_COLORS, getDefaultVoiceSettings } from '../../shared/constants'
 import { listRepoWorktrees } from '../repo-worktrees'
 import type { Store } from '../persistence'
 import type { StatsCollector } from '../stats/collector'
@@ -181,6 +181,8 @@ import type {
   NotesPanelOpenState,
   NotesPanelStateArgs
 } from '../../shared/notes-types'
+import type { VoiceSettings } from '../../shared/speech-types'
+import { getSpeechModelManager, getSpeechSttService } from '../speech/speech-runtime-service'
 
 type RuntimeAccountServices = {
   claudeAccounts: ClaudeAccountService
@@ -221,6 +223,7 @@ type RuntimeStore = {
     branchPrefix: string
     branchPrefixCustom: string
     mobileAutoRestoreFitMs?: number | null
+    voice?: VoiceSettings
   }
   // Why: narrow to `unknown` return so test mocks can return void without
   // a cast. The runtime never reads the return value — the persisted value
@@ -730,6 +733,16 @@ export class OrcaRuntimeService {
   private readonly getLocalProviderFn: (() => IPtyProvider) | null
   private accountServices: RuntimeAccountServices | null = null
   private _notesStore: NotesMarkdownStore | null = null
+  private mobileDictation: {
+    id: string
+    owner: string
+    clientId?: string
+    connectionId?: string
+    state: 'starting' | 'active' | 'closing'
+    partialText: string
+    finalTexts: string[]
+    errors: string[]
+  } | null = null
 
   constructor(
     store: RuntimeStore | null = null,
@@ -1684,6 +1697,213 @@ export class OrcaRuntimeService {
     this.accountServices = services
   }
 
+  async startMobileDictation(params: {
+    dictationId: string
+    modelId?: string
+    clientId?: string
+    connectionId?: string
+  }): Promise<{
+    dictationId: string
+    modelId: string
+  }> {
+    if (!this.store) {
+      throw new Error('voice_dictation_unavailable')
+    }
+
+    const voice = this.store.getSettings().voice ?? getDefaultVoiceSettings()
+    if (!voice.enabled) {
+      throw new Error('voice_dictation_disabled')
+    }
+
+    const modelId = params.modelId || voice.sttModel
+    if (!modelId) {
+      throw new Error('voice_model_not_selected')
+    }
+
+    const modelState = await getSpeechModelManager(this.store).getModelState(modelId)
+    if (modelState.status !== 'ready') {
+      throw new Error(`voice_model_not_ready:${modelState.status}`)
+    }
+
+    if (!params.clientId) {
+      throw new Error('dictation_requires_mobile_client')
+    }
+
+    if (this.mobileDictation) {
+      throw new Error('dictation_already_active')
+    }
+
+    const owner = `mobile:${params.dictationId}`
+    this.mobileDictation = {
+      id: params.dictationId,
+      owner,
+      clientId: params.clientId,
+      connectionId: params.connectionId,
+      state: 'starting',
+      partialText: '',
+      finalTexts: [],
+      errors: []
+    }
+
+    try {
+      await getSpeechSttService(this.store).startDictation(
+        modelId,
+        (event) => {
+          const session = this.mobileDictation
+          if (!session || session.id !== params.dictationId) {
+            return
+          }
+          if (event.type === 'partial') {
+            session.partialText = event.text ?? ''
+          } else if (event.type === 'final') {
+            const text = event.text?.trim()
+            if (text) {
+              session.finalTexts.push(text)
+              session.partialText = ''
+            }
+          } else if (event.type === 'error') {
+            session.errors.push(event.error ?? 'Speech worker error')
+          }
+        },
+        undefined,
+        owner
+      )
+      if (this.mobileDictation?.id !== params.dictationId) {
+        throw new Error('dictation_canceled')
+      }
+      this.mobileDictation.state = 'active'
+    } catch (error) {
+      if (this.mobileDictation?.id === params.dictationId) {
+        this.mobileDictation = null
+      }
+      throw error
+    }
+
+    return { dictationId: params.dictationId, modelId }
+  }
+
+  feedMobileDictation(params: {
+    dictationId: string
+    audioBase64: string
+    sampleRate: number
+    clientId?: string
+    connectionId?: string
+  }): {
+    dictationId: string
+  } {
+    const session = this.mobileDictation
+    if (!session || session.id !== params.dictationId) {
+      throw new Error('dictation_stream_not_started')
+    }
+    if (!params.clientId || session.clientId !== params.clientId) {
+      throw new Error('dictation_owner_mismatch')
+    }
+    if (session.connectionId && session.connectionId !== params.connectionId) {
+      throw new Error('dictation_owner_mismatch')
+    }
+    if (session.state !== 'active') {
+      throw new Error('dictation_stream_closing')
+    }
+    if (session.errors.length > 0) {
+      throw new Error(session.errors[0])
+    }
+
+    const pcm = Buffer.from(params.audioBase64, 'base64')
+    const samples = new Float32Array(Math.floor(pcm.length / 2))
+    for (let i = 0; i < samples.length; i += 1) {
+      samples[i] = pcm.readInt16LE(i * 2) / 32768
+    }
+    getSpeechSttService(this.store!).feedAudio(samples, params.sampleRate, session.owner)
+    return { dictationId: params.dictationId }
+  }
+
+  async finishMobileDictation(params: {
+    dictationId: string
+    clientId?: string
+    connectionId?: string
+  }): Promise<{
+    dictationId: string
+    text: string
+  }> {
+    const session = this.mobileDictation
+    if (!session || session.id !== params.dictationId) {
+      throw new Error('dictation_stream_not_started')
+    }
+    if (!params.clientId || session.clientId !== params.clientId) {
+      throw new Error('dictation_owner_mismatch')
+    }
+    if (session.connectionId && session.connectionId !== params.connectionId) {
+      throw new Error('dictation_owner_mismatch')
+    }
+    session.state = 'closing'
+    try {
+      await getSpeechSttService(this.store!).stopDictation(session.owner)
+      if (session.errors.length > 0) {
+        throw new Error(session.errors[0])
+      }
+      const text = [...session.finalTexts, session.partialText].join(' ').trim()
+      return { dictationId: params.dictationId, text }
+    } finally {
+      if (this.mobileDictation?.id === session.id) {
+        this.mobileDictation = null
+      }
+    }
+  }
+
+  async cancelMobileDictation(params: {
+    dictationId: string
+    clientId?: string
+    connectionId?: string
+  }): Promise<{ dictationId: string }> {
+    const session = this.mobileDictation
+    if (
+      session?.id === params.dictationId &&
+      params.clientId &&
+      session.clientId === params.clientId &&
+      (!session.connectionId || session.connectionId === params.connectionId)
+    ) {
+      session.state = 'closing'
+      try {
+        await getSpeechSttService(this.store!).stopDictation(session.owner)
+      } finally {
+        if (this.mobileDictation?.id === session.id) {
+          this.mobileDictation = null
+        }
+      }
+    }
+    return { dictationId: params.dictationId }
+  }
+
+  private cancelMobileDictationSession(session: NonNullable<typeof this.mobileDictation>): void {
+    if (session.state === 'closing') {
+      return
+    }
+    session.state = 'closing'
+    void getSpeechSttService(this.store!)
+      .stopDictation(session.owner)
+      .finally(() => {
+        if (this.mobileDictation?.id === session.id) {
+          this.mobileDictation = null
+        }
+      })
+  }
+
+  cancelMobileDictationForConnection(connectionId: string): void {
+    const session = this.mobileDictation
+    if (!session || session.connectionId !== connectionId) {
+      return
+    }
+    this.cancelMobileDictationSession(session)
+  }
+
+  private cancelMobileDictationForClient(clientId: string): void {
+    const session = this.mobileDictation
+    if (!session || session.clientId !== clientId) {
+      return
+    }
+    this.cancelMobileDictationSession(session)
+  }
+
   private requireAccountServices(): RuntimeAccountServices {
     if (!this.accountServices) {
       throw new Error('Account services are not configured on this runtime')
@@ -1869,6 +2089,8 @@ export class OrcaRuntimeService {
   }
 
   onClientDisconnected(clientId: string): void {
+    this.cancelMobileDictationForClient(clientId)
+
     // (1) Cancel pending restore-debounce timers owned by this client.
     for (const [ptyId, entry] of this.pendingRestoreTimers) {
       if (entry.clientId === clientId) {

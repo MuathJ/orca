@@ -1,3 +1,5 @@
+/* eslint-disable max-lines -- Why: this test mirrors the complete core IPC handler registry so
+   duplicate-registration coverage stays tied to the one production entry point. */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
@@ -36,7 +38,8 @@ const {
   registerAppHandlersMock,
   registerLinearHandlersMock,
   registerExportHandlersMock,
-  registerOnboardingHandlersMock
+  registerOnboardingHandlersMock,
+  registerSpeechHandlersMock
 } = vi.hoisted(() => ({
   registerCliHandlersMock: vi.fn(),
   registerPreflightHandlersMock: vi.fn(),
@@ -73,11 +76,16 @@ const {
   registerAppHandlersMock: vi.fn(),
   registerLinearHandlersMock: vi.fn(),
   registerExportHandlersMock: vi.fn(),
-  registerOnboardingHandlersMock: vi.fn()
+  registerOnboardingHandlersMock: vi.fn(),
+  registerSpeechHandlersMock: vi.fn()
 }))
 
 vi.mock('./onboarding', () => ({
   registerOnboardingHandlers: registerOnboardingHandlersMock
+}))
+
+vi.mock('./speech', () => ({
+  registerSpeechHandlers: registerSpeechHandlersMock
 }))
 
 vi.mock('./cli', () => ({
@@ -250,6 +258,7 @@ describe('registerCoreHandlers', () => {
     registerAppHandlersMock.mockReset()
     registerLinearHandlersMock.mockReset()
     registerExportHandlersMock.mockReset()
+    registerSpeechHandlersMock.mockReset()
   })
 
   it('passes the store through to handler registrars that need it', () => {
@@ -303,6 +312,7 @@ describe('registerCoreHandlers', () => {
     expect(setTrustedBrowserRendererWebContentsIdMock).toHaveBeenCalledWith(null)
     expect(registerBrowserHandlersMock).toHaveBeenCalled()
     expect(registerFilesystemWatcherHandlersMock).toHaveBeenCalled()
+    expect(registerSpeechHandlersMock).toHaveBeenCalledWith(store)
   })
 
   it('only registers IPC handlers once but always updates web contents id', () => {
