@@ -6,12 +6,10 @@ import type {
   ComputerUsePermissionState,
   ComputerUsePermissionStatus
 } from '../../../../shared/computer-use-permissions-types'
+import { COMPUTER_USE_SKILL_INSTALL_COMMAND } from '@/lib/agent-feature-install-commands'
 import { Button } from '../ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import type { SettingsSearchEntry } from './settings-search'
-
-const COMPUTER_USE_SKILL_INSTALL_COMMAND =
-  'npx skills add https://github.com/stablyai/orca --skill computer-use'
 
 export const COMPUTER_USE_PANE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   {
@@ -228,8 +226,7 @@ export function ComputerUsePane(): React.JSX.Element {
         <div className="space-y-1">
           <p className="text-sm font-medium">Install Computer Use Skill</p>
           <p className="text-xs text-muted-foreground">
-            Run this once in an agent project so agents know how to use Orca&apos;s computer
-            controls.
+            Run this once on your computer so agents know how to use Orca&apos;s computer controls.
           </p>
         </div>
         <div className="flex max-w-full items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
