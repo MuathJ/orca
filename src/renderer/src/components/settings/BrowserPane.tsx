@@ -30,9 +30,14 @@ export const BROWSER_PANE_SEARCH_ENTRIES = [
 type BrowserPaneProps = {
   settings: GlobalSettings
   updateSettings: (updates: Partial<GlobalSettings>) => void
+  onOpenComputerUse?: () => void
 }
 
-export function BrowserPane({ settings, updateSettings }: BrowserPaneProps): React.JSX.Element {
+export function BrowserPane({
+  settings,
+  updateSettings,
+  onOpenComputerUse
+}: BrowserPaneProps): React.JSX.Element {
   const searchQuery = useAppStore((s) => s.settingsSearchQuery)
   const browserDefaultUrl = useAppStore((s) => s.browserDefaultUrl)
   const setBrowserDefaultUrl = useAppStore((s) => s.setBrowserDefaultUrl)
@@ -87,7 +92,12 @@ export function BrowserPane({ settings, updateSettings }: BrowserPaneProps): Rea
 
   return (
     <div className="space-y-6">
-      {showBrowserUse ? <BrowserUseSetup onConfigureMoreBrowsers={scrollToSessionCookies} /> : null}
+      {showBrowserUse ? (
+        <BrowserUseSetup
+          onConfigureMoreBrowsers={scrollToSessionCookies}
+          onOpenComputerUse={onOpenComputerUse}
+        />
+      ) : null}
 
       {showHomePage ? (
         <SearchableSetting
