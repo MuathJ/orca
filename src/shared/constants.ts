@@ -14,6 +14,7 @@ import { DEFAULT_TERMINAL_FONT_WEIGHT } from './terminal-fonts'
 import { getDefaultTerminalQuickCommands } from './terminal-quick-commands'
 import type { VoiceSettings } from './speech-types'
 import { cloneDefaultWorkspaceStatuses } from './workspace-statuses'
+import { TASK_PROVIDERS } from './task-providers'
 
 export const SCHEMA_VERSION = 1
 export const DEFAULT_APP_FONT_FAMILY = 'Geist'
@@ -36,6 +37,7 @@ export const SSH_TERMINATE_RECONNECT_REQUIRED = 'SSH_TERMINATE_RECONNECT_REQUIRE
 export const BROWSER_FAMILY_LABELS: Record<string, string> = {
   chrome: 'Google Chrome',
   chromium: 'Chromium',
+  comet: 'Comet',
   arc: 'Arc',
   edge: 'Microsoft Edge',
   brave: 'Brave',
@@ -163,6 +165,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     editorAutoSave: false,
     editorAutoSaveDelayMs: DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS,
     editorMinimapEnabled: false,
+    markdownReviewToolsEnabled: true,
     terminalFontSize: 14,
     terminalFontFamily: defaultTerminalFontFamily(),
     terminalFontWeight: DEFAULT_TERMINAL_FONT_WEIGHT,
@@ -228,6 +231,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     skipDeleteAutomationConfirm: false,
     defaultTaskViewPreset: 'all',
     defaultTaskSource: 'github',
+    visibleTaskProviders: [...TASK_PROVIDERS],
     defaultRepoSelection: null,
     defaultLinearTeamSelection: null,
     opencodeSessionCookie: '',
@@ -347,7 +351,8 @@ export function getDefaultUIState(): PersistedUIState {
     dismissedUpdateVersion: null,
     lastUpdateCheckAt: null,
     trustedOrcaHooks: {},
-    acknowledgedAgentsByPaneKey: {}
+    acknowledgedAgentsByPaneKey: {},
+    workspaceCleanup: { dismissals: {} }
   }
 }
 

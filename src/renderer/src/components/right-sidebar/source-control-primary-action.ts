@@ -1,5 +1,6 @@
 // Why: split from the combined primary+dropdown module because the primary and dropdown are independent derivations with different priority ladders; together they exceed the max-lines budget and tangle unrelated concerns.
 
+import type { HostedReviewCreationEligibility } from '../../../../shared/hosted-review'
 import type { GitUpstreamStatus, PRState } from '../../../../shared/types'
 
 // Why: this module owns the pure state-machine logic for the Source Control
@@ -14,7 +15,14 @@ import type { GitUpstreamStatus, PRState } from '../../../../shared/types'
 // `handlePrimaryClick` switch exhaustively over only the kinds the
 // primary can actually emit, and it kills the compound-commit branch in
 // the isRemoteOperationActive tooltip below at compile time.
-export type PrimaryActionKind = 'commit' | 'stage' | 'push' | 'pull' | 'sync' | 'publish'
+export type PrimaryActionKind =
+  | 'commit'
+  | 'stage'
+  | 'push'
+  | 'pull'
+  | 'sync'
+  | 'publish'
+  | 'create_pr'
 
 // Why: the in-flight remote op tracker stores which action the user actually
 // triggered, so the primary button can mirror that label/spinner instead of
@@ -46,6 +54,7 @@ export type PrimaryActionInputs = {
   // the user-triggered action on the primary button instead of leaving a
   // stale label that no longer matches what the slice is doing.
   inFlightRemoteOpKind?: RemoteOpKind | null
+  hostedReviewCreation?: HostedReviewCreationEligibility | null
 }
 
 const PRIMARY_LABEL_BY_KIND: Record<Exclude<PrimaryActionKind, 'commit'>, string> = {
@@ -53,7 +62,8 @@ const PRIMARY_LABEL_BY_KIND: Record<Exclude<PrimaryActionKind, 'commit'>, string
   push: 'Push',
   pull: 'Pull',
   sync: 'Sync',
-  publish: 'Publish Branch'
+  publish: 'Publish Branch',
+  create_pr: 'Create PR'
 }
 
 function describePushCount(ahead: number): string {
@@ -97,7 +107,8 @@ export function resolvePrimaryAction(inputs: PrimaryActionInputs): PrimaryAction
     upstreamStatus,
     prState,
     isPRStateLoading,
-    inFlightRemoteOpKind
+    inFlightRemoteOpKind,
+    hostedReviewCreation
   } = inputs
 
   // 1. Commit in flight — lock the primary no matter what else is true.
@@ -265,6 +276,15 @@ export function resolvePrimaryAction(inputs: PrimaryActionInputs): PrimaryAction
       kind: 'push',
       label: 'Push',
       title: describePushCount(upstreamStatus.ahead),
+      disabled: false
+    }
+  }
+
+  if (hostedReviewCreation?.canCreate) {
+    return {
+      kind: 'create_pr',
+      label: 'Create PR',
+      title: 'Create a pull request for this branch',
       disabled: false
     }
   }

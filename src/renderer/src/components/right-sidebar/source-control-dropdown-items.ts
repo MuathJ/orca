@@ -6,6 +6,8 @@ export type DropdownActionKind =
   | 'commit'
   | 'commit_push'
   | 'commit_sync'
+  | 'create_pr'
+  | 'push_create_pr'
   | 'push'
   | 'pull'
   | 'sync'
@@ -17,6 +19,7 @@ export type DropdownItem = {
   label: string
   title: string
   disabled: boolean
+  hint?: string
 }
 
 export type DropdownSeparator = { kind: 'separator' }
@@ -60,7 +63,8 @@ export function resolveDropdownItems(inputs: PrimaryActionInputs): DropdownEntry
     isRemoteOperationActive,
     upstreamStatus,
     prState,
-    isPRStateLoading
+    isPRStateLoading,
+    hostedReviewCreation
   } = inputs
 
   const hasStaged = stagedCount > 0
@@ -239,12 +243,64 @@ export function resolveDropdownItems(inputs: PrimaryActionInputs): DropdownEntry
       publishBlockedByMergedPR
   }
 
+  const createBlockedHint = (() => {
+    switch (hostedReviewCreation?.blockedReason) {
+      case 'dirty':
+        return 'Commit changes first'
+      case 'detached_head':
+        return 'Check out a branch first'
+      case 'default_branch':
+        return 'Switch to a feature branch'
+      case 'no_upstream':
+        return 'Publish Branch'
+      case 'needs_push':
+        return 'Push first'
+      case 'needs_sync':
+        return 'Sync first'
+      case 'auth_required':
+        return 'Run gh auth login in this environment'
+      case 'unsupported_provider':
+        return 'Unsupported provider'
+      case 'existing_review':
+        return 'A pull request already exists'
+      case 'fork_head_unsupported':
+        return 'Fork head unsupported'
+      default:
+        return upstreamLoading ? 'Checking branch status…' : 'Branch is not ready'
+    }
+  })()
+
+  const createPRItem: DropdownItem = {
+    kind: 'create_pr',
+    label: 'Create PR',
+    title: hostedReviewCreation?.canCreate
+      ? 'Create a pull request for this branch'
+      : createBlockedHint,
+    hint: hostedReviewCreation?.canCreate ? undefined : createBlockedHint,
+    disabled: globalBusy || upstreamLoading || !hostedReviewCreation?.canCreate
+  }
+
+  const canPushAndCreate =
+    !globalBusy &&
+    !upstreamLoading &&
+    hostedReviewCreation?.provider === 'github' &&
+    hostedReviewCreation.blockedReason === 'needs_push'
+  const pushCreatePRItem: DropdownItem = {
+    kind: 'push_create_pr',
+    label: 'Push & Create PR',
+    title: canPushAndCreate ? 'Push local commits, then create a pull request' : createBlockedHint,
+    hint: canPushAndCreate ? undefined : createBlockedHint,
+    disabled: !canPushAndCreate
+  }
+
   return [
     commitItem,
     commitPushItem,
     commitSyncItem,
     { kind: 'separator' },
     pushItem,
+    createPRItem,
+    pushCreatePRItem,
     pullItem,
     syncItem,
     fetchItem,

@@ -21,7 +21,17 @@ const GEMINI_PERMISSION = '\u270B' // ✋
 // unsafe under the substring-based detector and would classify ordinary shell
 // titles like "timestamp ready" as agent activity. Product telemetry uses the
 // explicit launch/session facts Orca owns, not this inference path.
-export const AGENT_NAMES = ['claude', 'codex', 'copilot', 'cursor', 'gemini', 'opencode', 'aider']
+export const AGENT_NAMES = [
+  'claude',
+  'codex',
+  'copilot',
+  'cursor',
+  'gemini',
+  'opencode',
+  'openclaw',
+  'aider',
+  'grok'
+]
 
 // Why: `android` contains `droid`; unlike the legacy agent names above, Droid
 // must be token-matched so Android terminal titles do not become agent status.
@@ -344,6 +354,9 @@ export function getAgentLabel(title: string): string | null {
   }
   if (lower.includes('copilot')) {
     return 'GitHub Copilot'
+  }
+  if (lower.includes('grok')) {
+    return 'Grok'
   }
   if (lower.includes('opencode')) {
     return 'OpenCode'

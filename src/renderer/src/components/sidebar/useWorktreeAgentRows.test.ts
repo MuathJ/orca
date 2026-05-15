@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   AGENT_STATUS_STALE_AFTER_MS,
-  type AgentStatusEntry
+  type AgentStatusEntry,
+  type MigrationUnsupportedPtyEntry
 } from '../../../../shared/agent-status-types'
 import type { TerminalTab } from '../../../../shared/types'
 import type { RetainedAgentEntry } from '@/store/slices/agent-status'
 import {
   buildWorktreeAgentRows,
-  selectWorktreeLiveEntries,
-  selectWorktreeRetainedAgents
+  selectMigrationUnsupportedEntriesForWorktree
 } from './useWorktreeAgentRows'
 import { makePaneKey } from '../../../../shared/stable-pane-id'
 
@@ -113,38 +113,33 @@ describe('buildWorktreeAgentRows', () => {
   })
 })
 
-describe('worktree agent row selectors', () => {
-  it('returns the same live entries reference for the same store snapshot', () => {
-    const liveEntry = makeEntry(PANE_KEY_1, 1000)
-    const state = {
-      tabsByWorktree: { 'wt-1': [makeTab('tab-1')] },
-      agentStatusByPaneKey: { [PANE_KEY_1]: liveEntry },
-      migrationUnsupportedByPtyId: {},
-      retainedAgentsByPaneKey: {}
+describe('selectMigrationUnsupportedEntriesForWorktree', () => {
+  it('returns raw migration records so shallow selectors can cache snapshots', () => {
+    const unsupported: MigrationUnsupportedPtyEntry = {
+      ptyId: 'pty-1',
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: '44444444-4444-4444-8444-444444444444',
+      paneKey: makePaneKey('tab-1', '44444444-4444-4444-8444-444444444444'),
+      reason: 'legacy-numeric-pane-key',
+      source: 'local',
+      updatedAt: 1000
     }
-
-    const first = selectWorktreeLiveEntries(state, 'wt-1')
-    const second = selectWorktreeLiveEntries(state, 'wt-1')
-
-    // Why: Zustand selectors are used as React external-store snapshots; a
-    // fresh non-empty array for the same store state can cause a render loop.
-    expect(second).toBe(first)
-    expect(first).toEqual([liveEntry])
-  })
-
-  it('returns the same retained entries reference for the same store snapshot', () => {
-    const retained = makeRetained(PANE_KEY_1, 'wt-1', 1000)
     const state = {
       tabsByWorktree: { 'wt-1': [makeTab('tab-1')] },
       agentStatusByPaneKey: {},
-      migrationUnsupportedByPtyId: {},
-      retainedAgentsByPaneKey: { [PANE_KEY_1]: retained }
+      migrationUnsupportedByPtyId: { 'pty-1': unsupported },
+      retainedAgentsByPaneKey: {}
     }
 
-    const first = selectWorktreeRetainedAgents(state, 'wt-1')
-    const second = selectWorktreeRetainedAgents(state, 'wt-1')
+    const first = selectMigrationUnsupportedEntriesForWorktree(state, 'wt-1')
+    const second = selectMigrationUnsupportedEntriesForWorktree(state, 'wt-1')
 
-    expect(second).toBe(first)
-    expect(first).toEqual([retained])
+    // Why: the Electron black-screen regression came from creating converted
+    // AgentStatusEntry objects inside the Zustand selector. Returning store
+    // records preserves element identity for useShallow.
+    expect(first).toEqual([unsupported])
+    expect(second).toEqual([unsupported])
+    expect(first[0]).toBe(second[0])
   })
 })

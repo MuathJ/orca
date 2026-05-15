@@ -113,8 +113,18 @@ import type {
   GitHubPRFile,
   GitHubPRReviewCommentInput
 } from '../../shared/types'
-import type { HostedReviewInfo } from '../../shared/hosted-review'
+import type {
+  CreateHostedReviewInput,
+  CreateHostedReviewResult,
+  HostedReviewCreationEligibility,
+  HostedReviewCreationEligibilityArgs,
+  HostedReviewInfo
+} from '../../shared/hosted-review'
 import { getHostedReviewForBranch as getHostedReviewForBranchFromRepo } from '../source-control/hosted-review'
+import {
+  createHostedReview as createHostedReviewFromRepo,
+  getHostedReviewCreationEligibility as getHostedReviewCreationEligibilityFromRepo
+} from '../source-control/hosted-review-creation'
 import {
   connect as connectLinear,
   disconnect as disconnectLinear,
@@ -4457,6 +4467,50 @@ export class OrcaRuntimeService {
     return review
   }
 
+  async getHostedReviewCreationEligibility(
+    args: Omit<HostedReviewCreationEligibilityArgs, 'repoPath'> & { repoSelector: string }
+  ): Promise<HostedReviewCreationEligibility> {
+    const repo = await this.resolveRepoSelector(args.repoSelector)
+    this.assertHostIntegrationRepoIsLocal(repo, 'hosted_review')
+    return getHostedReviewCreationEligibilityFromRepo({
+      repoPath: repo.path,
+      branch: args.branch,
+      base: args.base ?? null,
+      hasUncommittedChanges: args.hasUncommittedChanges,
+      hasUpstream: args.hasUpstream,
+      ahead: args.ahead,
+      behind: args.behind,
+      linkedGitHubPR: args.linkedGitHubPR ?? null,
+      linkedGitLabMR: args.linkedGitLabMR ?? null,
+      linkedBitbucketPR: args.linkedBitbucketPR ?? null,
+      linkedGiteaPR: args.linkedGiteaPR ?? null
+    })
+  }
+
+  async createHostedReview(
+    args: CreateHostedReviewInput & { repoSelector: string }
+  ): Promise<CreateHostedReviewResult> {
+    const repo = await this.resolveRepoSelector(args.repoSelector)
+    this.assertHostIntegrationRepoIsLocal(repo, 'hosted_review')
+    const result = await createHostedReviewFromRepo(repo.path, {
+      provider: args.provider,
+      base: args.base,
+      head: args.head,
+      title: args.title,
+      body: args.body,
+      draft: args.draft
+    })
+    if (result.ok && this.stats && !this.stats.hasCountedPR(result.url)) {
+      this.stats.record({
+        type: 'pr_created',
+        at: Date.now(),
+        repoId: repo.id,
+        meta: { prNumber: result.number, prUrl: result.url }
+      })
+    }
+    return result
+  }
+
   async getRepoIssue(
     repoSelector: string,
     number: number
@@ -4943,6 +4997,7 @@ export class OrcaRuntimeService {
     baseBranch?: string
     linkedIssue?: number | null
     linkedPR?: number | null
+    linkedLinearIssue?: string
     comment?: string
     displayName?: string
     sparseCheckout?: { directories: string[]; presetId?: string }
@@ -5100,6 +5155,9 @@ export class OrcaRuntimeService {
         : {}),
       ...(args.linkedIssue !== undefined ? { linkedIssue: args.linkedIssue } : {}),
       ...(args.linkedPR !== undefined ? { linkedPR: args.linkedPR } : {}),
+      ...(args.linkedLinearIssue !== undefined
+        ? { linkedLinearIssue: args.linkedLinearIssue }
+        : {}),
       ...(args.createdWithAgent ? { createdWithAgent: args.createdWithAgent } : {}),
       ...(args.comment !== undefined ? { comment: args.comment } : {})
     })
@@ -6406,6 +6464,23 @@ export class OrcaRuntimeService {
       }
     }
     return { stopped }
+  }
+
+  async hasTerminalsForWorktree(worktreeSelector: string): Promise<boolean> {
+    const graphEpoch = this.captureReadyGraphEpoch()
+    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
+    this.assertStableReadyGraph(graphEpoch)
+    for (const leaf of this.leaves.values()) {
+      if (leaf.worktreeId === worktree.id && leaf.ptyId) {
+        return true
+      }
+    }
+    for (const pty of this.ptysById.values()) {
+      if (pty.worktreeId === worktree.id && pty.connected) {
+        return true
+      }
+    }
+    return false
   }
 
   markRendererReloading(windowId: number): void {

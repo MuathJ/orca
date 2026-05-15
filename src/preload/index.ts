@@ -100,6 +100,8 @@ import type {
   AutomationCreateInput,
   AutomationDispatchRequest,
   AutomationDispatchResult,
+  ExternalAutomationActionInput,
+  ExternalAutomationManager,
   AutomationRun,
   AutomationUpdateInput
 } from '../shared/automations-types'
@@ -492,6 +494,19 @@ const api = {
     }
   },
 
+  workspaceCleanup: {
+    scan: (args?: { worktreeId?: string; skipGitWorktreeIds?: string[] }): Promise<unknown> =>
+      ipcRenderer.invoke('workspaceCleanup:scan', args),
+    dismiss: (args: { dismissals: unknown[] }): Promise<void> =>
+      ipcRenderer.invoke('workspaceCleanup:dismiss', args),
+    clearDismissals: (): Promise<void> => ipcRenderer.invoke('workspaceCleanup:clearDismissals'),
+    hasKillableLocalProcesses: (args: {
+      worktreeId: string
+      connectionId?: string | null
+      worktreePath?: string
+    }): Promise<unknown> => ipcRenderer.invoke('workspaceCleanup:hasKillableLocalProcesses', args)
+  },
+
   workspaceSpace: {
     analyze: (): Promise<WorkspaceSpaceAnalyzeResult> =>
       ipcRenderer.invoke('workspaceSpace:analyze'),
@@ -683,26 +698,29 @@ const api = {
   gh: {
     viewer: (): Promise<unknown> => ipcRenderer.invoke('gh:viewer'),
 
-    repoSlug: (args: { repoPath: string }): Promise<unknown> =>
+    repoSlug: (args: { repoPath: string; repoId?: string }): Promise<unknown> =>
       ipcRenderer.invoke('gh:repoSlug', args),
 
     prForBranch: (args: {
       repoPath: string
+      repoId?: string
       branch: string
       linkedPRNumber?: number | null
     }): Promise<unknown> => ipcRenderer.invoke('gh:prForBranch', args),
 
-    issue: (args: { repoPath: string; number: number }): Promise<unknown> =>
+    issue: (args: { repoPath: string; repoId?: string; number: number }): Promise<unknown> =>
       ipcRenderer.invoke('gh:issue', args),
 
     workItem: (args: {
       repoPath: string
+      repoId?: string
       number: number
       type?: 'issue' | 'pr'
     }): Promise<unknown> => ipcRenderer.invoke('gh:workItem', args),
 
     workItemByOwnerRepo: (args: {
       repoPath: string
+      repoId?: string
       owner: string
       repo: string
       number: number
@@ -711,12 +729,14 @@ const api = {
 
     workItemDetails: (args: {
       repoPath: string
+      repoId?: string
       number: number
       type?: 'issue' | 'pr'
     }): Promise<unknown> => ipcRenderer.invoke('gh:workItemDetails', args),
 
     prFileContents: (args: {
       repoPath: string
+      repoId?: string
       prNumber: number
       path: string
       oldPath?: string
@@ -725,21 +745,26 @@ const api = {
       baseSha: string
     }): Promise<unknown> => ipcRenderer.invoke('gh:prFileContents', args),
 
-    listIssues: (args: { repoPath: string; limit?: number }): Promise<unknown[]> =>
+    listIssues: (args: { repoPath: string; repoId?: string; limit?: number }): Promise<unknown[]> =>
       ipcRenderer.invoke('gh:listIssues', args),
 
     createIssue: (args: {
       repoPath: string
+      repoId?: string
       title: string
       body: string
     }): Promise<{ ok: true; number: number; url: string } | { ok: false; error: string }> =>
       ipcRenderer.invoke('gh:createIssue', args),
 
-    countWorkItems: (args: { repoPath: string; query?: string }): Promise<number> =>
-      ipcRenderer.invoke('gh:countWorkItems', args),
+    countWorkItems: (args: {
+      repoPath: string
+      repoId?: string
+      query?: string
+    }): Promise<number> => ipcRenderer.invoke('gh:countWorkItems', args),
 
     listWorkItems: (args: {
       repoPath: string
+      repoId?: string
       limit?: number
       query?: string
       before?: string
@@ -748,6 +773,7 @@ const api = {
 
     prChecks: (args: {
       repoPath: string
+      repoId?: string
       prNumber: number
       headSha?: string
       noCache?: boolean
@@ -755,24 +781,28 @@ const api = {
 
     prComments: (args: {
       repoPath: string
+      repoId?: string
       prNumber: number
       noCache?: boolean
     }): Promise<unknown[]> => ipcRenderer.invoke('gh:prComments', args),
 
     resolveReviewThread: (args: {
       repoPath: string
+      repoId?: string
       threadId: string
       resolve: boolean
     }): Promise<boolean> => ipcRenderer.invoke('gh:resolveReviewThread', args),
 
     updatePRTitle: (args: {
       repoPath: string
+      repoId?: string
       prNumber: number
       title: string
     }): Promise<boolean> => ipcRenderer.invoke('gh:updatePRTitle', args),
 
     mergePR: (args: {
       repoPath: string
+      repoId?: string
       prNumber: number
       method?: 'merge' | 'squash' | 'rebase'
     }): Promise<{ ok: true } | { ok: false; error: string }> =>
@@ -780,6 +810,7 @@ const api = {
 
     updateIssue: (args: {
       repoPath: string
+      repoId?: string
       number: number
       updates: unknown
     }): Promise<{ ok: true } | { ok: false; error: string }> =>
@@ -787,6 +818,7 @@ const api = {
 
     addIssueComment: (args: {
       repoPath: string
+      repoId?: string
       number: number
       body: string
       type?: 'issue' | 'pr'
@@ -794,6 +826,7 @@ const api = {
 
     addPRReviewCommentReply: (args: {
       repoPath: string
+      repoId?: string
       prNumber: number
       commentId: number
       body: string
@@ -804,6 +837,7 @@ const api = {
 
     addPRReviewComment: (args: {
       repoPath: string
+      repoId?: string
       prNumber: number
       commitId: string
       path: string
@@ -812,22 +846,29 @@ const api = {
       body: string
     }): Promise<GitHubCommentResult> => ipcRenderer.invoke('gh:addPRReviewComment', args),
 
-    listLabels: (args: { repoPath: string }): Promise<string[]> =>
+    listLabels: (args: { repoPath: string; repoId?: string }): Promise<string[]> =>
       ipcRenderer.invoke('gh:listLabels', args),
 
-    listAssignableUsers: (args: { repoPath: string }): Promise<GitHubAssignableUser[]> =>
-      ipcRenderer.invoke('gh:listAssignableUsers', args),
+    listAssignableUsers: (args: {
+      repoPath: string
+      repoId?: string
+    }): Promise<GitHubAssignableUser[]> => ipcRenderer.invoke('gh:listAssignableUsers', args),
 
     // Why: every renderer subscribes to local mutation broadcasts so each
     // window's work-item-details cache invalidates the affected entry. The
     // event fires after a successful mutation in any window — see
     // src/main/ipc/github.ts broadcastWorkItemMutated.
     onWorkItemMutated: (
-      callback: (payload: { repoPath: string; type: 'issue' | 'pr'; number: number }) => void
+      callback: (payload: {
+        repoPath: string
+        repoId?: string
+        type: 'issue' | 'pr'
+        number: number
+      }) => void
     ): (() => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        payload: { repoPath: string; type: 'issue' | 'pr'; number: number }
+        payload: { repoPath: string; repoId?: string; type: 'issue' | 'pr'; number: number }
       ): void => callback(payload)
       ipcRenderer.on('gh:workItemMutated', listener)
       return () => ipcRenderer.removeListener('gh:workItemMutated', listener)
@@ -897,7 +938,10 @@ const api = {
 
   hostedReview: {
     forBranch: (args: HostedReviewForBranchArgs): Promise<unknown> =>
-      ipcRenderer.invoke('hostedReview:forBranch', args)
+      ipcRenderer.invoke('hostedReview:forBranch', args),
+    getCreationEligibility: (args: unknown): Promise<unknown> =>
+      ipcRenderer.invoke('hostedReview:getCreationEligibility', args),
+    create: (args: unknown): Promise<unknown> => ipcRenderer.invoke('hostedReview:create', args)
   },
 
   // Why: GitLab bindings live in `./gitlab` so adding or changing a
@@ -1061,7 +1105,9 @@ const api = {
       ipcRenderer.invoke('agentHooks:geminiStatus'),
     cursorStatus: (): Promise<AgentHookInstallStatus> =>
       ipcRenderer.invoke('agentHooks:cursorStatus'),
-    droidStatus: (): Promise<AgentHookInstallStatus> => ipcRenderer.invoke('agentHooks:droidStatus')
+    droidStatus: (): Promise<AgentHookInstallStatus> =>
+      ipcRenderer.invoke('agentHooks:droidStatus'),
+    grokStatus: (): Promise<AgentHookInstallStatus> => ipcRenderer.invoke('agentHooks:grokStatus')
   },
 
   agentTrust: {
@@ -1556,6 +1602,25 @@ const api = {
     /** Synchronous session save for beforeunload — blocks until flushed to disk. */
     setSync: (args: unknown): void => {
       ipcRenderer.sendSync('session:set-sync', args)
+    }
+  },
+
+  remoteWorkspace: {
+    get: (args: { targetId: string }): Promise<unknown> =>
+      ipcRenderer.invoke('remoteWorkspace:get', args),
+    setForConnectedTargets: (args: {
+      session: unknown
+      hydratedTargetIds?: string[]
+    }): Promise<unknown> => ipcRenderer.invoke('remoteWorkspace:setForConnectedTargets', args),
+    listEnabledConnectedTargets: (): Promise<string[]> =>
+      ipcRenderer.invoke('remoteWorkspace:listEnabledConnectedTargets'),
+    listConnectedClients: (args?: { targetIds?: string[] }): Promise<unknown> =>
+      ipcRenderer.invoke('remoteWorkspace:listConnectedClients', args),
+    clientId: (): Promise<string> => ipcRenderer.invoke('remoteWorkspace:clientId'),
+    onChanged: (callback: (event: unknown) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('remoteWorkspace:changed', listener)
+      return () => ipcRenderer.removeListener('remoteWorkspace:changed', listener)
     }
   },
 
@@ -2596,6 +2661,10 @@ const api = {
     list: (): Promise<Automation[]> => ipcRenderer.invoke('automations:list'),
     listRuns: (args?: { automationId?: string }): Promise<AutomationRun[]> =>
       ipcRenderer.invoke('automations:listRuns', args),
+    listExternalManagers: (): Promise<ExternalAutomationManager[]> =>
+      ipcRenderer.invoke('automations:listExternalManagers'),
+    runExternalAction: (input: ExternalAutomationActionInput): Promise<void> =>
+      ipcRenderer.invoke('automations:runExternalAction', input),
     create: (input: AutomationCreateInput): Promise<Automation> =>
       ipcRenderer.invoke('automations:create', input),
     update: (args: { id: string; updates: AutomationUpdateInput }): Promise<Automation> =>

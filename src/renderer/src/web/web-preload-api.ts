@@ -128,6 +128,7 @@ function createWebPreloadApi(): Partial<PreloadApi> {
     git: createGitApi(),
     browser: createBrowserApi(),
     gh: createGitHubApi(),
+    hostedReview: createRuntimeNamespaceApi('hostedReview'),
     linear: createRuntimeNamespaceApi('linear'),
     hooks: createHooksApi(),
     stats: {
@@ -790,7 +791,7 @@ function createCliApi(): NonNullable<Partial<PreloadApi>['cli']> {
 }
 
 function createAgentHooksApi(): NonNullable<Partial<PreloadApi>['agentHooks']> {
-  const status = (agent: 'claude' | 'codex' | 'gemini' | 'cursor' | 'droid') =>
+  const status = (agent: 'claude' | 'codex' | 'gemini' | 'cursor' | 'droid' | 'grok') =>
     Promise.resolve({
       agent,
       state: 'not_installed',
@@ -803,7 +804,8 @@ function createAgentHooksApi(): NonNullable<Partial<PreloadApi>['agentHooks']> {
     codexStatus: () => status('codex'),
     geminiStatus: () => status('gemini'),
     cursorStatus: () => status('cursor'),
-    droidStatus: () => status('droid')
+    droidStatus: () => status('droid'),
+    grokStatus: () => status('grok')
   }
 }
 

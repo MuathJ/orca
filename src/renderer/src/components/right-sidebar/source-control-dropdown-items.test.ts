@@ -33,6 +33,8 @@ describe('resolveDropdownItems', () => {
       'commit_sync',
       'separator',
       'push',
+      'create_pr',
+      'push_create_pr',
       'pull',
       'sync',
       'fetch',
@@ -220,5 +222,26 @@ describe('resolveDropdownItems', () => {
     // Sanity check: plain counterparts still carry counts.
     expect(byKind.push.label).toBe('Push (2)')
     expect(byKind.sync.label).toBe('Sync (↓3 ↑2)')
+  })
+
+  it('enables Push & Create PR when review creation is only blocked by unpushed commits', () => {
+    const items = resolveDropdownItems(
+      inputs({
+        upstreamStatus: { hasUpstream: true, ahead: 2, behind: 0 },
+        hostedReviewCreation: {
+          provider: 'github',
+          review: null,
+          canCreate: false,
+          blockedReason: 'needs_push',
+          nextAction: 'push'
+        }
+      })
+    )
+    const byKind = Object.fromEntries(
+      items.filter((e) => e.kind !== 'separator').map((e) => [e.kind, e])
+    )
+    expect(byKind.create_pr.disabled).toBe(true)
+    expect(byKind.create_pr.hint).toBe('Push first')
+    expect(byKind.push_create_pr.disabled).toBe(false)
   })
 })
