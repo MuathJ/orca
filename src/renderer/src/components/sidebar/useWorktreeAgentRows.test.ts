@@ -5,7 +5,11 @@ import {
 } from '../../../../shared/agent-status-types'
 import type { TerminalTab } from '../../../../shared/types'
 import type { RetainedAgentEntry } from '@/store/slices/agent-status'
-import { buildWorktreeAgentRows } from './useWorktreeAgentRows'
+import {
+  buildWorktreeAgentRows,
+  selectWorktreeLiveEntries,
+  selectWorktreeRetainedAgents
+} from './useWorktreeAgentRows'
 import { makePaneKey } from '../../../../shared/stable-pane-id'
 
 const ORPHAN_PANE_KEY = makePaneKey('tab-orphan', '11111111-1111-4111-8111-111111111111')
@@ -106,5 +110,41 @@ describe('buildWorktreeAgentRows', () => {
     const done = rows.find((r) => r.paneKey === PANE_KEY_2)
     expect(working?.state).toBe('idle')
     expect(done?.state).toBe('done')
+  })
+})
+
+describe('worktree agent row selectors', () => {
+  it('returns the same live entries reference for the same store snapshot', () => {
+    const liveEntry = makeEntry(PANE_KEY_1, 1000)
+    const state = {
+      tabsByWorktree: { 'wt-1': [makeTab('tab-1')] },
+      agentStatusByPaneKey: { [PANE_KEY_1]: liveEntry },
+      migrationUnsupportedByPtyId: {},
+      retainedAgentsByPaneKey: {}
+    }
+
+    const first = selectWorktreeLiveEntries(state, 'wt-1')
+    const second = selectWorktreeLiveEntries(state, 'wt-1')
+
+    // Why: Zustand selectors are used as React external-store snapshots; a
+    // fresh non-empty array for the same store state can cause a render loop.
+    expect(second).toBe(first)
+    expect(first).toEqual([liveEntry])
+  })
+
+  it('returns the same retained entries reference for the same store snapshot', () => {
+    const retained = makeRetained(PANE_KEY_1, 'wt-1', 1000)
+    const state = {
+      tabsByWorktree: { 'wt-1': [makeTab('tab-1')] },
+      agentStatusByPaneKey: {},
+      migrationUnsupportedByPtyId: {},
+      retainedAgentsByPaneKey: { [PANE_KEY_1]: retained }
+    }
+
+    const first = selectWorktreeRetainedAgents(state, 'wt-1')
+    const second = selectWorktreeRetainedAgents(state, 'wt-1')
+
+    expect(second).toBe(first)
+    expect(first).toEqual([retained])
   })
 })

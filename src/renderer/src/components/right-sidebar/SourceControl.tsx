@@ -15,11 +15,11 @@ import {
   Check,
   Copy,
   Folder,
-  FolderTree,
   FolderOpen,
   GitMerge,
   GitPullRequestArrow,
   List,
+  ListTree,
   MessageSquare,
   Send,
   Trash,
@@ -2325,6 +2325,7 @@ function SourceControlInner(): React.JSX.Element {
                                   key={node.key}
                                   node={node}
                                   actionPaths={getSourceControlDirectoryActionPaths(node)}
+                                  hideBulkActions={Boolean(normalizedFilter)}
                                   isExecutingBulk={isExecutingBulk}
                                   isCollapsed={collapsedTreeDirs.has(node.key)}
                                   onToggle={() => toggleTreeDir(node.key)}
@@ -2837,7 +2838,7 @@ function CompareSummary({
             onClick={onChangeBaseRef}
           />
           <CompareSummaryToolbarButton
-            icon={viewMode === 'tree' ? FolderTree : List}
+            icon={viewMode === 'tree' ? List : ListTree}
             label={viewMode === 'tree' ? 'Show changes as list' : 'Show changes as tree'}
             onClick={onToggleViewMode}
           />
@@ -2861,7 +2862,7 @@ function CompareSummary({
           onClick={onChangeBaseRef}
         />
         <CompareSummaryToolbarButton
-          icon={viewMode === 'tree' ? FolderTree : List}
+          icon={viewMode === 'tree' ? List : ListTree}
           label={viewMode === 'tree' ? 'Show changes as list' : 'Show changes as tree'}
           onClick={onToggleViewMode}
         />
@@ -3197,6 +3198,7 @@ function OperationBanner({
 function SourceControlTreeDirectoryRow({
   node,
   actionPaths,
+  hideBulkActions,
   isExecutingBulk,
   isCollapsed,
   onToggle,
@@ -3206,6 +3208,7 @@ function SourceControlTreeDirectoryRow({
 }: {
   node: SourceControlTreeDirectoryNode
   actionPaths: SourceControlDirectoryActionPaths
+  hideBulkActions: boolean
   isExecutingBulk: boolean
   isCollapsed: boolean
   onToggle: () => void
@@ -3213,9 +3216,11 @@ function SourceControlTreeDirectoryRow({
   onStagePaths: (paths: readonly string[]) => Promise<void>
   onUnstagePaths: (paths: readonly string[]) => Promise<void>
 }): React.JSX.Element {
-  const canStage = actionPaths.stagePaths.length > 0
-  const canUnstage = actionPaths.unstagePaths.length > 0
-  const canDiscard = actionPaths.discardPaths.length > 0
+  // Why: filtered tree nodes only contain visible descendants. Folder-wide
+  // bulk labels would overpromise if they acted on that filtered subset.
+  const canStage = !hideBulkActions && actionPaths.stagePaths.length > 0
+  const canUnstage = !hideBulkActions && actionPaths.unstagePaths.length > 0
+  const canDiscard = !hideBulkActions && actionPaths.discardPaths.length > 0
 
   return (
     <div
