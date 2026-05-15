@@ -58,6 +58,7 @@ import RepoDotLabel from '@/components/repo/RepoDotLabel'
 import IssueSourceIndicator, { sameGitHubOwnerRepo } from '@/components/github/IssueSourceIndicator'
 import IssueSourceSelector, { issueSourceChipClass } from '@/components/github/IssueSourceSelector'
 import GitHubRateLimitPill from '@/components/github/GitHubRateLimitPill'
+import { reconcileLinearTeamSelection } from '@/components/task-page-linear-team-selection'
 import { stripRepoQualifiers } from '../../../shared/task-query'
 import GitHubItemDialog from '@/components/GitHubItemDialog'
 import GitLabItemDialog from '@/components/GitLabItemDialog'
@@ -1078,15 +1079,10 @@ export default function TaskPage(): React.JSX.Element {
     return new Set(defaultLinearTeamSelection)
   })
 
-  // Why: in sticky-all mode, auto-include all teams once the list arrives.
-  // In explicit-selection mode, the set is already correct from the initializer.
+  // Why: team IDs belong to one Linear workspace. Switching workspaces while a
+  // saved subset exists must not leave the task list filtered by stale team IDs.
   useEffect(() => {
-    if (availableTeams.length === 0) {
-      return
-    }
-    if (!defaultLinearTeamSelection) {
-      setLinearTeamSelection(new Set(availableTeams.map((t) => t.id)))
-    }
+    setLinearTeamSelection(reconcileLinearTeamSelection(availableTeams, defaultLinearTeamSelection))
   }, [availableTeams, defaultLinearTeamSelection])
 
   const displayedLinearIssues = useMemo(

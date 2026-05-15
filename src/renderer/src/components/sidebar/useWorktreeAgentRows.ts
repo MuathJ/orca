@@ -115,7 +115,7 @@ export function useWorktreeAgentRows(worktreeId: string): DashboardAgentRow[] {
         }
         out.push(entry)
       }
-      for (const unsupported of Object.values(s.migrationUnsupportedByPtyId)) {
+      for (const unsupported of Object.values(s.migrationUnsupportedByPtyId ?? {})) {
         const entry = migrationUnsupportedToAgentStatusEntry(unsupported)
         if (!entry) {
           continue
