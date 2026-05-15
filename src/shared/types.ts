@@ -1209,6 +1209,8 @@ export type GlobalSettings = {
   editorAutoSave: boolean
   editorAutoSaveDelayMs: number
   editorMinimapEnabled: boolean
+  /** Whether local markdown review note controls and the review panel are shown. */
+  markdownReviewToolsEnabled: boolean
   terminalFontSize: number
   terminalFontFamily: string
   terminalFontWeight: number
