@@ -4,6 +4,7 @@ import {
   buildGitStatusSourceControlTree,
   buildSourceControlTree,
   collectSourceControlTreeFileEntries,
+  compactSourceControlTree,
   flattenSourceControlTree
 } from './source-control-tree'
 
@@ -97,5 +98,44 @@ describe('buildSourceControlTree', () => {
       'file:packages/app/package.json'
     ])
     expect(tree[0].key).toBe('dir::branch::packages')
+  })
+
+  it('compacts single-child directory chains for visible source-control rows', () => {
+    const tree = buildSourceControlTree('branch', [
+      { path: 'src/renderer/src/mockups.css', status: 'modified' },
+      { path: 'src/renderer/src/components/App.tsx', status: 'added' }
+    ])
+
+    const compacted = compactSourceControlTree(tree)
+
+    expect(labels(flattenSourceControlTree(compacted, new Set()))).toEqual([
+      'directory:src/renderer/src',
+      'directory:src/renderer/src/components',
+      'file:src/renderer/src/components/App.tsx',
+      'file:src/renderer/src/mockups.css'
+    ])
+    expect(compacted[0]).toMatchObject({
+      name: 'src/renderer/src',
+      path: 'src/renderer/src',
+      depth: 0,
+      key: 'dir::branch::src/renderer/src'
+    })
+  })
+
+  it('preserves real branching folders when compacting directory chains', () => {
+    const tree = buildSourceControlTree('unstaged', [
+      entry({ path: 'src/main/index.ts' }),
+      entry({ path: 'src/renderer/index.ts' })
+    ])
+
+    const compacted = compactSourceControlTree(tree)
+
+    expect(labels(flattenSourceControlTree(compacted, new Set()))).toEqual([
+      'directory:src',
+      'directory:src/main',
+      'file:src/main/index.ts',
+      'directory:src/renderer',
+      'file:src/renderer/index.ts'
+    ])
   })
 })

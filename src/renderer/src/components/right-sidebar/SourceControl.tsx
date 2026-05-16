@@ -69,6 +69,7 @@ import {
   buildGitStatusSourceControlTree,
   buildSourceControlTree,
   collectSourceControlTreeFileEntries,
+  compactSourceControlTree,
   flattenSourceControlTree,
   type SourceControlTreeNode
 } from './source-control-tree'
@@ -170,6 +171,9 @@ const BRANCH_REFRESH_INTERVAL_MS = 5000
 // measurable prevents transient top-left tooltip placement during hover.
 const SOURCE_CONTROL_ROW_ACTION_OVERLAY_CLASS =
   'absolute right-0 top-0 bottom-0 flex shrink-0 items-center gap-1.5 bg-accent pr-3 pl-2 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto [@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto'
+const SOURCE_CONTROL_TREE_INDENT_PX = 12
+const SOURCE_CONTROL_TREE_DIRECTORY_PADDING_PX = 8
+const SOURCE_CONTROL_TREE_FILE_PADDING_PX = 20
 
 // Why: the pure state-machine logic now lives in
 // ./source-control-primary-action.ts. It is imported directly by callers
@@ -648,9 +652,15 @@ function SourceControlInner(): React.JSX.Element {
 
   const treeRootsByArea = useMemo(
     () => ({
-      staged: buildGitStatusSourceControlTree('staged', filteredGrouped.staged),
-      unstaged: buildGitStatusSourceControlTree('unstaged', filteredGrouped.unstaged),
-      untracked: buildGitStatusSourceControlTree('untracked', filteredGrouped.untracked)
+      staged: compactSourceControlTree(
+        buildGitStatusSourceControlTree('staged', filteredGrouped.staged)
+      ),
+      unstaged: compactSourceControlTree(
+        buildGitStatusSourceControlTree('unstaged', filteredGrouped.unstaged)
+      ),
+      untracked: compactSourceControlTree(
+        buildGitStatusSourceControlTree('untracked', filteredGrouped.untracked)
+      )
     }),
     [filteredGrouped]
   )
@@ -665,7 +675,7 @@ function SourceControlInner(): React.JSX.Element {
   )
 
   const branchTreeRoots = useMemo(
-    () => buildSourceControlTree('branch', filteredBranchEntries),
+    () => compactSourceControlTree(buildSourceControlTree('branch', filteredBranchEntries)),
     [filteredBranchEntries]
   )
   const visibleBranchTreeRows = useMemo(
@@ -2548,6 +2558,7 @@ function SourceControlInner(): React.JSX.Element {
                                 onUnstage={handleUnstage}
                                 onDiscard={requestDiscardEntry}
                                 commentCount={diffCommentCountByPath.get(node.entry.path) ?? 0}
+                                showPathHint={false}
                               />
                             )
                           })
@@ -2636,6 +2647,7 @@ function SourceControlInner(): React.JSX.Element {
                           onRevealInExplorer={revealInExplorer}
                           onOpen={() => openCommittedDiff(node.entry)}
                           commentCount={diffCommentCountByPath.get(node.entry.path) ?? 0}
+                          showPathHint={false}
                         />
                       )
                     })
@@ -3430,7 +3442,9 @@ function SourceControlTreeDirectoryRow({
   return (
     <div
       className="group relative flex w-full items-center gap-1 pr-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
-      style={{ paddingLeft: `${node.depth * 16 + 8}px` }}
+      style={{
+        paddingLeft: `${node.depth * SOURCE_CONTROL_TREE_INDENT_PX + SOURCE_CONTROL_TREE_DIRECTORY_PADDING_PX}px`
+      }}
     >
       <button
         type="button"
@@ -3504,7 +3518,9 @@ function SourceControlBranchTreeDirectoryRow({
   return (
     <div
       className="group relative flex w-full items-center gap-1 pr-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
-      style={{ paddingLeft: `${node.depth * 16 + 8}px` }}
+      style={{
+        paddingLeft: `${node.depth * SOURCE_CONTROL_TREE_INDENT_PX + SOURCE_CONTROL_TREE_DIRECTORY_PADDING_PX}px`
+      }}
     >
       <button
         type="button"
@@ -3543,7 +3559,8 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onStage,
   onUnstage,
   onDiscard,
-  commentCount
+  commentCount,
+  showPathHint = true
 }: {
   entryKey: string
   entry: GitStatusEntry
@@ -3559,6 +3576,7 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onUnstage: (filePath: string) => Promise<void>
   onDiscard: (entry: GitStatusEntry) => void
   commentCount: number
+  showPathHint?: boolean
 }): React.JSX.Element {
   const FileIcon = getFileTypeIcon(entry.path)
   const fileName = basename(entry.path)
@@ -3606,7 +3624,9 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
           'group relative flex cursor-pointer items-center gap-1 pr-3 py-1 transition-colors hover:bg-accent/40',
           selected && 'bg-accent/60'
         )}
-        style={{ paddingLeft: `${depth * 16 + 20}px` }}
+        style={{
+          paddingLeft: `${depth * SOURCE_CONTROL_TREE_INDENT_PX + SOURCE_CONTROL_TREE_FILE_PADDING_PX}px`
+        }}
         draggable
         onDragStart={(e) => {
           if (isUnresolvedConflict && entry.status === 'deleted') {
@@ -3629,7 +3649,9 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
         <div className="min-w-0 flex-1 text-xs">
           <span className="min-w-0 block truncate">
             <span className="text-foreground">{fileName}</span>
-            {dirPath && <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>}
+            {showPathHint && dirPath && (
+              <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>
+            )}
           </span>
           {conflictLabel && (
             <div className="truncate text-[11px] text-muted-foreground">{conflictLabel}</div>
@@ -3743,7 +3765,8 @@ function BranchEntryRow({
   depth = 0,
   onRevealInExplorer,
   onOpen,
-  commentCount
+  commentCount,
+  showPathHint = true
 }: {
   entry: GitBranchChangeEntry
   currentWorktreeId: string
@@ -3752,6 +3775,7 @@ function BranchEntryRow({
   onRevealInExplorer: (worktreeId: string, absolutePath: string) => void
   onOpen: () => void
   commentCount: number
+  showPathHint?: boolean
 }): React.JSX.Element {
   const FileIcon = getFileTypeIcon(entry.path)
   const fileName = basename(entry.path)
@@ -3766,7 +3790,9 @@ function BranchEntryRow({
     >
       <div
         className="group flex cursor-pointer items-center gap-1 pr-3 py-1 transition-colors hover:bg-accent/40"
-        style={{ paddingLeft: `${depth * 16 + 20}px` }}
+        style={{
+          paddingLeft: `${depth * SOURCE_CONTROL_TREE_INDENT_PX + SOURCE_CONTROL_TREE_FILE_PADDING_PX}px`
+        }}
         draggable
         onDragStart={(e) => {
           const absolutePath = joinPath(worktreePath, entry.path)
@@ -3778,7 +3804,9 @@ function BranchEntryRow({
         <FileIcon className="size-3.5 shrink-0" style={{ color: STATUS_COLORS[entry.status] }} />
         <span className="min-w-0 flex-1 truncate text-xs">
           <span className="text-foreground">{fileName}</span>
-          {dirPath && <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>}
+          {showPathHint && dirPath && (
+            <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>
+          )}
         </span>
         {commentCount > 0 && (
           <span

@@ -183,6 +183,38 @@ export function flattenSourceControlTree<Entry extends SourceControlTreeEntry, A
   return result
 }
 
+export function compactSourceControlTree<Entry extends SourceControlTreeEntry, Area extends string>(
+  nodes: SourceControlTreeNode<Entry, Area>[]
+): SourceControlTreeNode<Entry, Area>[] {
+  const compactNode = (
+    node: SourceControlTreeNode<Entry, Area>,
+    depth: number
+  ): SourceControlTreeNode<Entry, Area> => {
+    if (node.type === 'file') {
+      return { ...node, depth }
+    }
+
+    const names = [node.name]
+    let compacted = node
+    while (compacted.children.length === 1 && compacted.children[0]?.type === 'directory') {
+      compacted = compacted.children[0]
+      names.push(compacted.name)
+    }
+
+    // Why: Source Control trees often contain path-only folder chains from a
+    // small changed-file subset. Compressing them matches VS Code and keeps
+    // branch change trees readable without changing the underlying file set.
+    return {
+      ...compacted,
+      name: names.join('/'),
+      depth,
+      children: compacted.children.map((child) => compactNode(child, depth + 1))
+    }
+  }
+
+  return nodes.map((node) => compactNode(node, 0))
+}
+
 export function collectSourceControlTreeFileEntries<
   Entry extends SourceControlTreeEntry,
   Area extends string
